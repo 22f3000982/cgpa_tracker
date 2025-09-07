@@ -6,7 +6,7 @@
    ```bash
    git init
    git add .
-   git commit -m "Ready for Vercel deployment"
+   git commit -m "Ready for Vercel deployment."
    ```
 
 2. **Create GitHub repository:**

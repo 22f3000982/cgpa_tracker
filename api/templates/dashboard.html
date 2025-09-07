@@ -734,10 +734,12 @@
                 // Load courses
                 const coursesResponse = await fetch(`${API_BASE}/courses`);
                 const coursesData = await coursesResponse.json();
+                console.log("DEBUG: Courses API response:", coursesData);
                 
                 // Store course groups and options
                 courseGroups = coursesData.courses;
                 courseOptions = coursesData.options;
+                console.log("DEBUG: courseGroups after assignment:", courseGroups);
                 
                 // Flatten courses for backward compatibility
                 Object.values(coursesData.courses).forEach(group => {
@@ -877,7 +879,7 @@
         }
 
         // Render courses
-        function renderCourses() {
+        function renderCourses(skipOptionCheck = false) {
             // Render Foundation courses
             renderCourseSection('foundation', 'foundation-courses');
             
@@ -891,14 +893,20 @@
             renderCourseSection('dataScience_option1', 'dataScience-option1-courses');
             renderCourseSection('dataScience_option2', 'dataScience-option2-courses');
             
-            // Check if user has already selected an option
-            checkExistingDataScienceOption();
+            // Check if user has already selected an option - but only if not called from selectDataScienceOption
+            if (!skipOptionCheck) {
+                checkExistingDataScienceOption();
+            }
         }
 
         // Helper function to render a course section
         function renderCourseSection(sectionKey, containerId) {
+            console.log(`DEBUG: Rendering section ${sectionKey} to container ${containerId}`);
             const container = document.getElementById(containerId);
-            if (!container) return;
+            if (!container) {
+                console.error(`Container not found: ${containerId}`);
+                return;
+            }
             
             container.innerHTML = '';
             
@@ -908,6 +916,7 @@
             container.appendChild(row);
             
             const courses = courseGroups[sectionKey] || [];
+            console.log(`DEBUG: Found ${courses.length} courses for ${sectionKey}`, courses);
             courses.forEach(course => {
                 const currentGrade = courseData.courses[course.id]?.grade || '';
                 
@@ -976,8 +985,8 @@
             document.getElementById(`${optionKey}-card`).classList.add('selected');
             document.getElementById(`${optionKey}-radio`).checked = true;
             
-            // Re-render to enable/disable grade selects
-            renderCourses();
+            // Re-render to enable/disable grade selects - but skip option check to prevent infinite recursion
+            renderCourses(true);
         }
 
         // Clear grades from an option

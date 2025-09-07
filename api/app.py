@@ -11,8 +11,14 @@ import tempfile
 
 app = Flask(__name__)
 
-# Configuration for Vercel
-app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///cgpa_tracker.db')
+# Configuration for Vercel - use in-memory SQLite for serverless environment
+if os.environ.get('VERCEL_REGION'):
+    # We're on Vercel, use in-memory SQLite
+    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///:memory:'
+else:
+    # Local development
+    app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///cgpa_tracker.db')
+
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'your-production-secret-key-change-this')
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(days=7)
@@ -619,9 +625,14 @@ def init_db():
     except Exception as e:
         print(f"Error initializing database: {e}")
 
-# Initialize on import for Vercel
+# Initialize on import for Vercel - only if we're on Vercel or this is the first run
 with app.app_context():
-    init_db()
+    try:
+        # Check if users table exists before initializing
+        if not db.engine.dialect.has_table(db.engine, 'user'):
+            init_db()
+    except Exception as e:
+        print(f"Database initialization error (non-critical): {e}")
 
 # JWT Error Handlers
 @jwt.expired_token_loader
@@ -638,6 +649,12 @@ def missing_token_callback(error):
 
 # This is the application object that Vercel will import
 application = app
+
+# Required handler for Vercel serverless
+@app.route('/', defaults={'path': ''})
+@app.route('/<path:path>')
+def catch_all(path):
+    return app.send_static_file('index.html') if os.path.exists(os.path.join(app.static_folder, 'index.html')) else render_template('index.html')
 
 # For local development
 if __name__ == '__main__':

@@ -918,28 +918,29 @@
                 // Create card for course
                 const courseElement = document.createElement('div');
                 courseElement.className = 'course-card';
+                courseElement.setAttribute('data-course-id', course.id);
                 courseElement.innerHTML = `
                     <div class="course-code">${course.id.toUpperCase()}</div>
                     <div class="course-title">${course.name}</div>
                     <div class="credits-display">${course.credits} credits</div>
                     <div class="grade-buttons">
                         <button type="button" class="grade-btn ${currentGrade === 'S' ? 'active' : ''}" 
-                            onclick="handleGradeChange('${course.id}', 'S')" 
+                            data-grade="S" onclick="handleGradeChange('${course.id}', 'S')" 
                             ${sectionKey.includes('option') && !isOptionEnabled(sectionKey) ? 'disabled' : ''}>S</button>
                         <button type="button" class="grade-btn ${currentGrade === 'A' ? 'active' : ''}" 
-                            onclick="handleGradeChange('${course.id}', 'A')"
+                            data-grade="A" onclick="handleGradeChange('${course.id}', 'A')"
                             ${sectionKey.includes('option') && !isOptionEnabled(sectionKey) ? 'disabled' : ''}>A</button>
                         <button type="button" class="grade-btn ${currentGrade === 'B' ? 'active' : ''}" 
-                            onclick="handleGradeChange('${course.id}', 'B')"
+                            data-grade="B" onclick="handleGradeChange('${course.id}', 'B')"
                             ${sectionKey.includes('option') && !isOptionEnabled(sectionKey) ? 'disabled' : ''}>B</button>
                         <button type="button" class="grade-btn ${currentGrade === 'C' ? 'active' : ''}" 
-                            onclick="handleGradeChange('${course.id}', 'C')"
+                            data-grade="C" onclick="handleGradeChange('${course.id}', 'C')"
                             ${sectionKey.includes('option') && !isOptionEnabled(sectionKey) ? 'disabled' : ''}>C</button>
                         <button type="button" class="grade-btn ${currentGrade === 'D' ? 'active' : ''}" 
-                            onclick="handleGradeChange('${course.id}', 'D')"
+                            data-grade="D" onclick="handleGradeChange('${course.id}', 'D')"
                             ${sectionKey.includes('option') && !isOptionEnabled(sectionKey) ? 'disabled' : ''}>D</button>
                         <button type="button" class="grade-btn ${currentGrade === 'E' ? 'active' : ''}" 
-                            onclick="handleGradeChange('${course.id}', 'E')"
+                            data-grade="E" onclick="handleGradeChange('${course.id}', 'E')"
                             ${sectionKey.includes('option') && !isOptionEnabled(sectionKey) ? 'disabled' : ''}>E</button>
                     </div>
                 `;
@@ -1028,9 +1029,6 @@
                     if ((isOption1Course(courseId) && selectedDataScienceOption !== 'option1') ||
                         (isOption2Course(courseId) && selectedDataScienceOption !== 'option2')) {
                         alert('You can only select courses from one option. Please clear the other option first.');
-                        // Reset the select to its previous value
-                        const selectElement = document.querySelector(`[data-course-id="${courseId}"]`);
-                        selectElement.value = courseData.courses[courseId]?.grade || '';
                         return;
                     }
                 }
@@ -1063,18 +1061,38 @@
                 courseData.courses = {};
             }
 
+            const previousGrade = courseData.courses[courseId]?.grade;
+
             if (grade) {
-                courseData.courses[courseId] = {
-                    grade: grade,
-                    courseName: allCourses[courseId].name
-                };
+                // If clicking the same grade that's already active, clear it
+                if (previousGrade === grade) {
+                    delete courseData.courses[courseId];
+                    grade = null;
+                } else {
+                    courseData.courses[courseId] = {
+                        grade: grade,
+                        courseName: allCourses[courseId].name
+                    };
+                }
             } else {
                 delete courseData.courses[courseId];
             }
 
-            // Update select styling
-            const select = document.querySelector(`[data-course-id="${courseId}"]`);
-            select.className = `grade-select ${grade ? 'grade-' + grade : ''}`;
+            // Update button styling - find all grade buttons for this course
+            const courseCard = document.querySelector(`[data-course-id="${courseId}"]`);
+            if (courseCard) {
+                // Remove active class from all buttons
+                const buttons = courseCard.querySelectorAll('.grade-btn');
+                buttons.forEach(btn => btn.classList.remove('active'));
+                
+                // Add active class to selected grade button
+                if (grade) {
+                    const activeButton = courseCard.querySelector(`.grade-btn[data-grade="${grade}"]`);
+                    if (activeButton) {
+                        activeButton.classList.add('active');
+                    }
+                }
+            }
 
             // Recalculate stats
             recalculateStats();

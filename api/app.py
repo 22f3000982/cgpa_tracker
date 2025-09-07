@@ -773,11 +773,9 @@ def backup_database():
                 CREATE TABLE user_data (
                     id INTEGER PRIMARY KEY,
                     user_id INTEGER NOT NULL,
-                    semester TEXT,
-                    credits REAL,
-                    gpa REAL,
-                    notes TEXT,
-                    created_at TIMESTAMP,
+                    course_data TEXT,
+                    target_cgpa REAL,
+                    updated_at TIMESTAMP,
                     FOREIGN KEY (user_id) REFERENCES user (id)
                 )
                 ''')
@@ -812,15 +810,13 @@ def backup_database():
                 # User Data
                 for data in UserData.query.all():
                     cursor.execute(
-                        "INSERT INTO user_data (id, user_id, semester, credits, gpa, notes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        "INSERT INTO user_data (id, user_id, course_data, target_cgpa, updated_at) VALUES (?, ?, ?, ?, ?)",
                         (
                             data.id,
                             data.user_id,
-                            data.semester,
-                            data.credits,
-                            data.gpa,
-                            data.notes,
-                            data.created_at.isoformat() if data.created_at else None
+                            data.course_data,
+                            data.target_cgpa,
+                            data.updated_at.isoformat() if data.updated_at else None
                         )
                     )
                 

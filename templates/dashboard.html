@@ -1121,13 +1121,16 @@
 
             const cgpa = totalCredits > 0 ? totalPoints / totalCredits : 0;
 
-        userData.stats = {
-            cgpa: parseFloat(cgpa.toFixed(3)),
-            totalCredits,
-            completedCourses,
-            gradeDistribution,
-            totalPoints
-        };            updateDashboard();
+            userData.stats = {
+                cgpa: parseFloat(cgpa.toFixed(3)),
+                totalCredits,
+                completedCourses,
+                gradeDistribution,
+                totalPoints
+            };
+            
+            // Update the dashboard with the new stats
+            updateDashboard();
         }
 
         // Show save status

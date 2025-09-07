@@ -690,57 +690,133 @@ def backup_database():
         is_serverless = os.environ.get('VERCEL_REGION') is not None
         
         if is_serverless:
-            # In serverless, export data as JSON
+            # In serverless, create a temporary in-memory DB file
             try:
-                # Fetch all data from database
-                users_data = []
+                import sqlite3
+                import tempfile
+                import io
+                
+                # Create a temporary file
+                temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.db')
+                temp_path = temp_file.name
+                temp_file.close()
+                
+                print(f"Created temporary file at: {temp_path}")
+                
+                # Create a new SQLite database
+                conn = sqlite3.connect(temp_path)
+                cursor = conn.cursor()
+                
+                # Create tables
+                cursor.execute('''
+                CREATE TABLE user (
+                    id INTEGER PRIMARY KEY,
+                    username TEXT NOT NULL UNIQUE,
+                    email TEXT UNIQUE,
+                    password_hash TEXT NOT NULL,
+                    created_at TIMESTAMP,
+                    last_login TIMESTAMP,
+                    is_active BOOLEAN NOT NULL DEFAULT 1,
+                    is_admin BOOLEAN NOT NULL DEFAULT 0
+                )
+                ''')
+                
+                cursor.execute('''
+                CREATE TABLE user_data (
+                    id INTEGER PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    semester TEXT,
+                    credits REAL,
+                    gpa REAL,
+                    notes TEXT,
+                    created_at TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES user (id)
+                )
+                ''')
+                
+                cursor.execute('''
+                CREATE TABLE cgpa_history (
+                    id INTEGER PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    cgpa REAL,
+                    timestamp TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES user (id)
+                )
+                ''')
+                
+                # Copy data from the in-memory database to the file
+                # Users
                 for user in User.query.all():
-                    user_dict = user.to_dict()
-                    # Add user's data
-                    user_data = []
-                    for data in UserData.query.filter_by(user_id=user.id).all():
-                        user_data.append({
-                            'id': data.id,
-                            'semester': data.semester,
-                            'credits': data.credits,
-                            'gpa': data.gpa,
-                            'notes': data.notes,
-                            'created_at': data.created_at.isoformat() if data.created_at else None
-                        })
-                    user_dict['data'] = user_data
-                    
-                    # Add user's CGPA history
-                    cgpa_history = []
-                    for history in CGPAHistory.query.filter_by(user_id=user.id).all():
-                        cgpa_history.append({
-                            'id': history.id,
-                            'cgpa': history.cgpa,
-                            'timestamp': history.timestamp.isoformat() if history.timestamp else None
-                        })
-                    user_dict['cgpa_history'] = cgpa_history
-                    
-                    users_data.append(user_dict)
+                    cursor.execute(
+                        "INSERT INTO user (id, username, email, password_hash, created_at, last_login, is_active, is_admin) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            user.id,
+                            user.username,
+                            user.email,
+                            user.password_hash,
+                            user.created_at.isoformat() if user.created_at else None,
+                            user.last_login.isoformat() if user.last_login else None,
+                            1 if user.is_active else 0,
+                            1 if user.is_admin else 0
+                        )
+                    )
                 
-                # Create a response with JSON data
-                backup_data = {
-                    'backup_date': datetime.now().isoformat(),
-                    'version': '1.0',
-                    'environment': 'serverless',
-                    'users': users_data
-                }
+                # User Data
+                for data in UserData.query.all():
+                    cursor.execute(
+                        "INSERT INTO user_data (id, user_id, semester, credits, gpa, notes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            data.id,
+                            data.user_id,
+                            data.semester,
+                            data.credits,
+                            data.gpa,
+                            data.notes,
+                            data.created_at.isoformat() if data.created_at else None
+                        )
+                    )
                 
-                # Return as downloadable JSON file
-                import json
-                response_data = json.dumps(backup_data, indent=2)
+                # CGPA History
+                for history in CGPAHistory.query.all():
+                    cursor.execute(
+                        "INSERT INTO cgpa_history (id, user_id, cgpa, timestamp) VALUES (?, ?, ?, ?)",
+                        (
+                            history.id,
+                            history.user_id,
+                            history.cgpa,
+                            history.timestamp.isoformat() if history.timestamp else None
+                        )
+                    )
+                
+                # Commit changes and close
+                conn.commit()
+                conn.close()
+                
+                print("Database backup created successfully")
+                
+                # Generate timestamp for filename
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                backup_filename = f"cgpa_tracker_backup_{timestamp}.db"
+                
+                # Read the file into memory
+                with open(temp_path, 'rb') as f:
+                    file_data = f.read()
+                
+                # Delete the temporary file
+                os.unlink(temp_path)
+                
+                # Return file as download
                 response = Response(
-                    response_data,
-                    mimetype='application/json',
-                    headers={'Content-Disposition': 'attachment; filename=cgpa_tracker_backup.json'}
+                    file_data,
+                    mimetype='application/octet-stream',
+                    headers={'Content-Disposition': f'attachment; filename={backup_filename}'}
                 )
                 return response
                 
             except Exception as export_error:
-                print(f"Error exporting data: {export_error}")
+                print(f"Error creating database backup: {export_error}")
+                import traceback
+                traceback.print_exc()
                 return jsonify({
                     'message': 'Error creating database backup',
                     'error': str(export_error)
@@ -790,7 +866,7 @@ def restore_database():
         is_serverless = os.environ.get('VERCEL_REGION') is not None
         
         if is_serverless:
-            # For serverless, we can import from JSON
+            # For serverless, handle both .db and .json files
             if 'file' not in request.files:
                 return jsonify({'message': 'No file part in the request'}), 400
                 
@@ -798,17 +874,111 @@ def restore_database():
             if file.filename == '':
                 return jsonify({'message': 'No file selected'}), 400
                 
-            if not file.filename.endswith('.json'):
-                return jsonify({'message': 'Only JSON backup files are supported in serverless environment'}), 400
+            is_db_file = file.filename.endswith('.db')
+            is_json_file = file.filename.endswith('.json')
+            
+            if not (is_db_file or is_json_file):
+                return jsonify({'message': 'Only .db or .json backup files are supported'}), 400
                 
             try:
-                # Read JSON data
                 import json
-                backup_data = json.loads(file.read().decode('utf-8'))
+                import tempfile
+                import sqlite3
                 
-                # Validate backup format
-                if 'users' not in backup_data:
-                    return jsonify({'message': 'Invalid backup format'}), 400
+                if is_json_file:
+                    # Read JSON data
+                    backup_data = json.loads(file.read().decode('utf-8'))
+                    
+                    # Validate backup format
+                    if 'users' not in backup_data:
+                        return jsonify({'message': 'Invalid JSON backup format'}), 400
+                    
+                elif is_db_file:
+                    # Handle SQLite DB file
+                    try:
+                        # Create a temporary file to store the uploaded database
+                        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.db')
+                        file.save(temp_file.name)
+                        temp_file.close()
+                        
+                        # Try to connect to the uploaded database
+                        conn = sqlite3.connect(temp_file.name)
+                        cursor = conn.cursor()
+                        
+                        # Check if it has the required tables
+                        tables_query = "SELECT name FROM sqlite_master WHERE type='table';"
+                        cursor.execute(tables_query)
+                        tables = [row[0] for row in cursor.fetchall()]
+                        
+                        required_tables = ['user', 'user_data', 'cgpa_history']
+                        for table in required_tables:
+                            if table.lower() not in [t.lower() for t in tables]:
+                                os.unlink(temp_file.name)
+                                return jsonify({'message': f'Invalid database backup: missing {table} table'}), 400
+                        
+                        # Create a JSON-like structure from the SQLite data
+                        backup_data = {'users': []}
+                        
+                        # Get users
+                        cursor.execute("SELECT id, username, email, password_hash, created_at, last_login, is_active, is_admin FROM user")
+                        users = cursor.fetchall()
+                        
+                        for user in users:
+                            user_id, username, email, password_hash, created_at, last_login, is_active, is_admin = user
+                            user_data = {
+                                'id': user_id,
+                                'username': username,
+                                'email': email,
+                                'password_hash': password_hash,
+                                'created_at': created_at,
+                                'last_login': last_login,
+                                'is_active': bool(is_active),
+                                'is_admin': bool(is_admin),
+                                'data': [],
+                                'cgpa_history': []
+                            }
+                            
+                            # Get user data
+                            cursor.execute("SELECT id, semester, credits, gpa, notes, created_at FROM user_data WHERE user_id = ?", (user_id,))
+                            data_items = cursor.fetchall()
+                            
+                            for data in data_items:
+                                d_id, semester, credits, gpa, notes, d_created_at = data
+                                user_data['data'].append({
+                                    'id': d_id,
+                                    'semester': semester,
+                                    'credits': credits,
+                                    'gpa': gpa,
+                                    'notes': notes,
+                                    'created_at': d_created_at
+                                })
+                            
+                            # Get CGPA history
+                            cursor.execute("SELECT id, cgpa, timestamp FROM cgpa_history WHERE user_id = ?", (user_id,))
+                            history_items = cursor.fetchall()
+                            
+                            for history in history_items:
+                                h_id, cgpa, timestamp = history
+                                user_data['cgpa_history'].append({
+                                    'id': h_id,
+                                    'cgpa': cgpa,
+                                    'timestamp': timestamp
+                                })
+                            
+                            backup_data['users'].append(user_data)
+                        
+                        # Close connection and remove temp file
+                        conn.close()
+                        os.unlink(temp_file.name)
+                        
+                    except sqlite3.Error as sql_error:
+                        if os.path.exists(temp_file.name):
+                            os.unlink(temp_file.name)
+                        return jsonify({'message': f'Invalid SQLite database file: {str(sql_error)}'}), 400
+                    except Exception as db_error:
+                        if os.path.exists(temp_file.name):
+                            os.unlink(temp_file.name)
+                        return jsonify({'message': f'Error processing database file: {str(db_error)}'}), 500
                     
                 # Clear existing data
                 try:

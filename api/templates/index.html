@@ -382,6 +382,7 @@
                 if (response.ok) {
                     localStorage.setItem('access_token', data.access_token);
                     localStorage.setItem('user', JSON.stringify(data.user));
+                    localStorage.setItem('last_login_time', Date.now().toString());
                     showAlert('Login successful! Redirecting...', 'success');
                     setTimeout(() => {
                         window.location.href = '/dashboard';

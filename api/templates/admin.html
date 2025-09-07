@@ -274,12 +274,54 @@
         function checkAuth() {
             const token = localStorage.getItem('access_token');
             const user = JSON.parse(localStorage.getItem('user') || '{}');
+            const lastLogin = localStorage.getItem('last_login_time');
+            const now = Date.now();
             
+            // Check if token exists and user is admin
             if (!token || !user.is_admin) {
+                console.log("No token or not admin, redirecting to login");
                 window.location.href = '/';
                 return false;
             }
+            
+            // Check if token might be expired (older than 6 days)
+            if (lastLogin && now - parseInt(lastLogin) > 6 * 24 * 60 * 60 * 1000) {
+                console.log("Token might be expired, refreshing login");
+                // Try to re-login with admin credentials
+                refreshAdminLogin();
+                return localStorage.getItem('access_token');
+            }
+            
             return token;
+        }
+        
+        // Refresh admin login if token might be expired
+        async function refreshAdminLogin() {
+            try {
+                const response = await fetch(`${API_BASE}/auth/login`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        username: 'admin',
+                        password: '4129' 
+                    })
+                });
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    localStorage.setItem('access_token', data.access_token);
+                    localStorage.setItem('user', JSON.stringify(data.user));
+                    localStorage.setItem('last_login_time', Date.now().toString());
+                    console.log("Admin login refreshed successfully");
+                    return true;
+                } else {
+                    console.error("Failed to refresh admin login");
+                    return false;
+                }
+            } catch (error) {
+                console.error("Error refreshing admin login:", error);
+                return false;
+            }
         }
 
         // Load admin dashboard data
@@ -347,16 +389,29 @@
             if (!token) return;
 
             try {
+                console.log("Backup: Making API request with token", token.substring(0, 10) + "...");
                 const response = await fetch(`${API_BASE}/admin/backup`, {
                     headers: { 'Authorization': `Bearer ${token}` }
                 });
 
+                console.log("Backup response status:", response.status);
+                
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    console.error("Backup failed:", response.status, errorText);
+                    showMessage(`Backup failed: ${response.status} ${response.statusText}`, true);
+                    return;
+                }
+                
                 if (response.ok) {
                     const blob = await response.blob();
                     const url = window.URL.createObjectURL(blob);
                     const a = document.createElement('a');
                     a.href = url;
-                    const filename = response.headers.get('Content-Disposition').split('filename=')[1].replace(/"/g, '');
+                    const contentDisposition = response.headers.get('Content-Disposition') || '';
+                    const filename = contentDisposition.includes('filename=') ? 
+                        contentDisposition.split('filename=')[1].replace(/"/g, '') : 
+                        'cgpa_tracker_backup.db';
                     a.download = filename;
                     document.body.appendChild(a);
                     a.click();

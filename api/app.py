@@ -12,23 +12,29 @@ import tempfile
 app = Flask(__name__)
 
 # Configuration for Vercel - use in-memory SQLite for serverless environment
-if os.environ.get('VERCEL_REGION'):
+is_vercel = os.environ.get('VERCEL_REGION') is not None
+if is_vercel:
     # We're on Vercel, use in-memory SQLite
     app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///:memory:'
+    print("Using in-memory SQLite database for Vercel deployment")
 else:
     # Local development
     app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///cgpa_tracker.db')
+    print(f"Using SQLite database: {app.config['SQLALCHEMY_DATABASE_URI']}")
 
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'your-production-secret-key-change-this')
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(days=7)
 app.config['JWT_ALGORITHM'] = 'HS256'
 
+# Enable debug mode for better error reporting in development
+app.debug = not is_vercel and os.environ.get('FLASK_ENV') != 'production'
+
 # Initialize extensions
 db = SQLAlchemy(app)
 jwt = JWTManager(app)
 bcrypt = Bcrypt(app)
-CORS(app)
+CORS(app, resources={r"/*": {"origins": "*"}})
 
 # Models
 class User(db.Model):
@@ -205,14 +211,25 @@ def admin():
 @app.route('/api/auth/register', methods=['POST'])
 def register():
     try:
-        # Ensure tables exist first (needed for serverless environment)
+        # Make sure the database is initialized for this request
         with app.app_context():
-            if not db.engine.dialect.has_table(db.engine, 'user'):
-                print("Tables don't exist. Creating now...")
-                db.create_all()
-                print("Tables created successfully.")
+            try:
+                # Force table creation for serverless environment
+                if os.environ.get('VERCEL_REGION'):
+                    db.create_all()
+                    print("Tables created for registration endpoint")
+            except Exception as table_error:
+                print(f"Table creation error (non-critical): {table_error}")
 
-        data = request.get_json()
+        # Get and validate request data
+        try:
+            data = request.get_json()
+            if not data:
+                return jsonify({'message': 'Invalid JSON data'}), 400
+        except Exception as json_error:
+            print(f"Error parsing JSON: {json_error}")
+            return jsonify({'message': 'Invalid request format'}), 400
+
         username = data.get('username')
         email = data.get('email')
         password = data.get('password')
@@ -222,46 +239,67 @@ def register():
         if not username or not password:
             return jsonify({'message': 'Username and password are required'}), 400
 
-        # Check if user already exists - with extra error handling for serverless
+        # Check if user already exists - with simplified logic for serverless
         try:
-            # Check if user already exists
-            existing_user = None
-            if email:
-                existing_user = User.query.filter(
-                    (User.username == username) | (User.email == email)
-                ).first()
-            else:
-                existing_user = User.query.filter(User.username == username).first()
-                
+            # Simple query to check if user exists by username
+            existing_user = User.query.filter_by(username=username).first()
+            
             if existing_user:
-                if existing_user.username == username:
-                    return jsonify({'message': 'Username already exists. Please choose a different username.'}), 409
-                else:
+                return jsonify({'message': 'Username already exists. Please choose a different username.'}), 409
+            
+            # If email provided, check that too
+            if email:
+                existing_email = User.query.filter_by(email=email).first()
+                if existing_email:
                     return jsonify({'message': 'Email already exists. Please use a different email.'}), 409
         except Exception as check_error:
             print(f"Error checking existing user: {str(check_error)}")
             # Continue anyway since this might be a brand new database
 
-        # Create new user
-        password_hash = bcrypt.generate_password_hash(password).decode('utf-8')
-        new_user = User(
-            username=username,
-            email=email,
-            password_hash=password_hash
-        )
-
-        db.session.add(new_user)
-        db.session.commit()
-
-        print(f"DEBUG REGISTER: User created successfully: {username}")
-        return jsonify({'message': 'User created successfully'}), 201
+        # Create new user with safer error handling
+        try:
+            password_hash = bcrypt.generate_password_hash(password).decode('utf-8')
+            print("Password hashed successfully")
+            
+            new_user = User(
+                username=username,
+                email=email,
+                password_hash=password_hash
+            )
+            print("User object created")
+            
+            db.session.add(new_user)
+            print("User added to session")
+            
+            db.session.commit()
+            print(f"DEBUG REGISTER: User created successfully: {username}")
+            
+            # Return success response
+            return jsonify({
+                'message': 'User created successfully',
+                'username': username
+            }), 201
+            
+        except Exception as db_error:
+            print(f"Error during user creation/commit: {str(db_error)}")
+            db.session.rollback()
+            # Return a cleaner error message to the client
+            return jsonify({'message': 'Could not create user account. Please try again later.'}), 500
 
     except Exception as e:
         print(f"DEBUG REGISTER ERROR: {str(e)}")
         import traceback
         traceback.print_exc()
-        db.session.rollback()
-        return jsonify({'message': 'Registration failed', 'error': str(e)}), 500
+        
+        try:
+            db.session.rollback()
+        except:
+            pass
+            
+        return jsonify({
+            'message': 'Registration failed',
+            'error': 'An unexpected error occurred during registration'
+        }), 500
 
 @app.route('/api/auth/login', methods=['POST'])
 def login():
@@ -692,10 +730,45 @@ def missing_token_callback(error):
 # This is the application object that Vercel will import
 application = app
 
+# Health check endpoint - useful for debugging API status
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    try:
+        # Check database connection by executing simple query
+        try:
+            db.session.execute('SELECT 1').fetchall()
+            db_status = "connected"
+        except Exception as db_error:
+            db_status = f"error: {str(db_error)}"
+        
+        # Return health information
+        return jsonify({
+            'status': 'ok',
+            'timestamp': datetime.now().isoformat(),
+            'environment': 'vercel' if os.environ.get('VERCEL_REGION') else 'local',
+            'database': db_status,
+            'database_uri_type': 'in-memory' if ':memory:' in app.config['SQLALCHEMY_DATABASE_URI'] else 'file-based',
+            'endpoints': {
+                'register': '/api/auth/register',
+                'login': '/api/auth/login',
+                'health': '/api/health'
+            }
+        })
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'error': str(e)
+        }), 500
+
 # Required handler for Vercel serverless
 @app.route('/', defaults={'path': ''})
 @app.route('/<path:path>')
 def catch_all(path):
+    # If this is an API request that wasn't matched, return 404
+    if path.startswith('api/'):
+        return jsonify({'error': 'API endpoint not found'}), 404
+        
+    # Otherwise serve the index.html file
     return app.send_static_file('index.html') if os.path.exists(os.path.join(app.static_folder, 'index.html')) else render_template('index.html')
 
 # For local development

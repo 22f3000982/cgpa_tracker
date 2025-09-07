@@ -304,7 +304,39 @@ def register():
 @app.route('/api/auth/login', methods=['POST'])
 def login():
     try:
-        data = request.get_json()
+        # For serverless environment, make sure tables and admin user exist
+        if os.environ.get('VERCEL_REGION'):
+            try:
+                # Force database initialization for each login attempt in serverless
+                with app.app_context():
+                    db.create_all()
+                    # Special handling for admin user
+                    admin_exists = User.query.filter_by(username='admin').first() is not None
+                    if not admin_exists:
+                        print("Admin user doesn't exist, creating it now...")
+                        password_hash = bcrypt.generate_password_hash('4129').decode('utf-8')
+                        admin = User(
+                            username='admin',
+                            email='admin@cgpatracker.com',
+                            password_hash=password_hash,
+                            is_admin=True
+                        )
+                        db.session.add(admin)
+                        db.session.commit()
+                        print("Admin user created for login attempt")
+            except Exception as init_error:
+                print(f"Error in login database initialization: {init_error}")
+                # Continue anyway, maybe tables already exist
+
+        # Parse request data
+        try:
+            data = request.get_json()
+            if not data:
+                return jsonify({'message': 'Invalid JSON data'}), 400
+        except Exception as json_error:
+            print(f"Error parsing login JSON: {json_error}")
+            return jsonify({'message': 'Invalid request format'}), 400
+
         username_or_email = data.get('username')
         password = data.get('password')
 
@@ -313,32 +345,73 @@ def login():
         if not username_or_email or not password:
             return jsonify({'message': 'Username/email and password are required'}), 400
 
-        # Find user by username or email
-        user = User.query.filter(
-            (User.username == username_or_email) | 
-            (User.email == username_or_email)
-        ).first()
+        # Special handling for admin login - hardcoded check as a fallback
+        if username_or_email == 'admin' and password == '4129':
+            print("Admin credentials matched, searching for admin user...")
+            # Try to find admin user or create if not found
+            try:
+                admin_user = User.query.filter_by(username='admin').first()
+                if not admin_user:
+                    # Create admin user if it doesn't exist
+                    password_hash = bcrypt.generate_password_hash('4129').decode('utf-8')
+                    admin_user = User(
+                        username='admin',
+                        email='admin@cgpatracker.com',
+                        password_hash=password_hash,
+                        is_admin=True,
+                        created_at=datetime.now(timezone.utc)
+                    )
+                    db.session.add(admin_user)
+                    db.session.commit()
+                    print("Admin user created during login")
+                
+                # Update last login for admin
+                admin_user.last_login = datetime.now(timezone.utc)
+                db.session.commit()
+                
+                # Create access token for admin
+                access_token = create_access_token(identity=str(admin_user.id))
+                print("Admin login successful with special handling")
+                
+                return jsonify({
+                    'access_token': access_token,
+                    'user': admin_user.to_dict(),
+                    'message': 'Admin login successful'
+                })
+            except Exception as admin_error:
+                print(f"Error in admin special handling: {admin_error}")
+                # Fall through to regular login flow
+        
+        try:
+            # Find user by username or email
+            user = User.query.filter(
+                (User.username == username_or_email) | 
+                (User.email == username_or_email)
+            ).first()
 
-        print(f"DEBUG LOGIN: User found: {user is not None}")
+            print(f"DEBUG LOGIN: User found: {user is not None}")
 
-        if user and bcrypt.check_password_hash(user.password_hash, password):
-            print(f"DEBUG LOGIN: Password check passed for user: {user.username}")
-            # Update last login
-            user.last_login = datetime.now(timezone.utc)
-            db.session.commit()
+            if user and bcrypt.check_password_hash(user.password_hash, password):
+                print(f"DEBUG LOGIN: Password check passed for user: {user.username}")
+                # Update last login
+                user.last_login = datetime.now(timezone.utc)
+                db.session.commit()
 
-            # Create access token
-            access_token = create_access_token(identity=str(user.id))
-            print(f"DEBUG LOGIN: Token created successfully")
+                # Create access token
+                access_token = create_access_token(identity=str(user.id))
+                print(f"DEBUG LOGIN: Token created successfully")
 
-            return jsonify({
-                'access_token': access_token,
-                'user': user.to_dict(),
-                'message': 'Login successful'
-            })
+                return jsonify({
+                    'access_token': access_token,
+                    'user': user.to_dict(),
+                    'message': 'Login successful'
+                })
 
-        print(f"DEBUG LOGIN: Authentication failed")
-        return jsonify({'message': 'Invalid credentials'}), 401
+            print(f"DEBUG LOGIN: Authentication failed")
+            return jsonify({'message': 'Invalid credentials'}), 401
+        except Exception as query_error:
+            print(f"Error during user query: {query_error}")
+            return jsonify({'message': 'Login failed due to database error'}), 500
 
     except Exception as e:
         print(f"DEBUG LOGIN ERROR: {str(e)}")

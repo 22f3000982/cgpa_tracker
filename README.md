@@ -130,3 +130,5 @@ The application runs in debug mode by default. For production deployment:
 ## License
 
 This project is created for educational purposes for IIT Madras BS program students.
+---
+Copy-Item "last.db" -Destination ".\instance\cgpa_tracker.db" -Force

@@ -605,7 +605,7 @@
             <div class="row">
                 <div class="col-12">
                     <!-- Foundation Level -->
-                    <div class="course-section">
+                    <div id="foundation-section" class="course-section">
                         <h5 class="section-title">
                             <i class="fas fa-building-columns me-2"></i>
                             Foundation Level
@@ -615,7 +615,7 @@
                     </div>
 
                     <!-- Programming Diploma -->
-                    <div class="course-section">
+                    <div id="programming-section" class="course-section">
                         <h5 class="section-title">
                             <i class="fas fa-code me-2"></i>
                             Diploma in Programming
@@ -625,7 +625,7 @@
                     </div>
 
                     <!-- Data Science Diploma -->
-                    <div class="course-section">
+                    <div id="datascience-section" class="course-section">
                         <h5 class="section-title">
                             <i class="fas fa-chart-line me-2"></i>
                             Diploma in Data Science
@@ -856,15 +856,24 @@
                 }
             });
             
-            // Update the section credit displays
-            document.querySelector('.section-title:nth-of-type(1) .section-credits').textContent = 
-                `${sectionCompletedCredits.foundation}/${sectionTotalCredits.foundation} credits`;
+            // Update the section credit displays - using safer selector approach
+            const foundationCreditsElement = document.querySelector('#foundation-section .section-credits');
+            if (foundationCreditsElement) {
+                foundationCreditsElement.textContent = 
+                    `${sectionCompletedCredits.foundation}/${sectionTotalCredits.foundation} credits`;
+            }
                 
-            document.querySelector('.section-title:nth-of-type(2) .section-credits').textContent = 
-                `${sectionCompletedCredits.programming}/${sectionTotalCredits.programming} credits`;
+            const programmingCreditsElement = document.querySelector('#programming-section .section-credits');
+            if (programmingCreditsElement) {
+                programmingCreditsElement.textContent = 
+                    `${sectionCompletedCredits.programming}/${sectionTotalCredits.programming} credits`;
+            }
                 
-            document.querySelector('.section-title:nth-of-type(3) .section-credits').textContent = 
-                `${sectionCompletedCredits.dataScience}/${sectionTotalCredits.dataScience} credits`;
+            const dataScienceCreditsElement = document.querySelector('#datascience-section .section-credits');
+            if (dataScienceCreditsElement) {
+                dataScienceCreditsElement.textContent = 
+                    `${sectionCompletedCredits.dataScience}/${sectionTotalCredits.dataScience} credits`;
+            }
         }
 
         // Render courses

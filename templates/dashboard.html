@@ -128,6 +128,23 @@
             padding-bottom: 10px;
             border-bottom: 2px solid #e9ecef;
             transition: border-color 0.3s ease;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .section-credits {
+            font-size: 0.85rem;
+            font-weight: 500;
+            color: #6c757d;
+            background: rgba(102, 126, 234, 0.1);
+            padding: 3px 10px;
+            border-radius: 20px;
+        }
+        
+        .dark-mode .section-credits {
+            background: rgba(52, 152, 219, 0.2);
+            color: #bdc3c7;
         }
         
         .dark-mode .section-title {
@@ -135,16 +152,155 @@
             color: #ecf0f1;
         }
         
-        .course-item {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 15px;
-            margin-bottom: 10px;
+        .course-card {
             background: #f8f9fa;
             border-radius: 10px;
-            border-left: 4px solid #667eea;
+            padding: 20px;
+            margin-bottom: 15px;
+            box-shadow: 0 3px 10px rgba(0, 0, 0, 0.1);
             transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .dark-mode .course-card {
+            background: #2c3e50;
+            box-shadow: 0 3px 10px rgba(0, 0, 0, 0.3);
+        }
+        
+        .course-card:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.15);
+        }
+        
+        .course-code {
+            font-weight: bold;
+            color: #667eea;
+            margin-bottom: 8px;
+            font-size: 0.9rem;
+        }
+        
+        .dark-mode .course-code {
+            color: #3498db;
+        }
+        
+        .course-title {
+            font-weight: 600;
+            font-size: 1.1rem;
+            margin-bottom: 12px;
+            min-height: 40px;
+        }
+        
+        .credits-display {
+            font-size: 0.85rem;
+            color: #6c757d;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+        }
+        
+        .dark-mode .credits-display {
+            color: #bdc3c7;
+        }
+        
+        .grade-buttons {
+            display: flex;
+            justify-content: space-between;
+            gap: 5px;
+        }
+        
+        .grade-btn {
+            flex: 1;
+            background: #f1f3f5;
+            border: 1px solid #dee2e6;
+            color: #495057;
+            font-weight: 600;
+            padding: 6px 0;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        
+        .dark-mode .grade-btn {
+            background: #34495e;
+            border-color: #2c3e50;
+            color: #ecf0f1;
+        }
+        
+        .grade-btn:hover {
+            background: #e9ecef;
+        }
+        
+        .dark-mode .grade-btn:hover {
+            background: #2c3e50;
+        }
+        
+        .grade-btn.active {
+            background: #667eea;
+            border-color: #667eea;
+            color: white;
+        }
+        
+        .dark-mode .grade-btn.active {
+            background: #3498db;
+            border-color: #2980b9;
+        }
+        
+        /* Status header styling */
+        .header-info {
+            background: rgba(102, 126, 234, 0.1);
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 25px;
+        }
+        
+        .dark-mode .header-info {
+            background: rgba(52, 152, 219, 0.1);
+        }
+        
+        .header-stats {
+            display: flex;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+        
+        .header-stat-item {
+            flex: 1;
+            min-width: 120px;
+            text-align: center;
+        }
+        
+        .header-stat-value {
+            font-size: 1.8rem;
+            font-weight: 700;
+        }
+        
+        .header-cgpa {
+            color: #28a745;
+        }
+        
+        .dark-mode .header-cgpa {
+            color: #2ecc71;
+        }
+        
+        .header-credits {
+            color: #667eea;
+        }
+        
+        .dark-mode .header-credits {
+            color: #3498db;
+        }
+        
+        .header-stat-label {
+            font-size: 0.85rem;
+            color: #6c757d;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .dark-mode .header-stat-label {
+            color: #bdc3c7;
         }
         
         .dark-mode .course-item {
@@ -421,24 +577,20 @@
         </div>
         
         <div id="dashboard-content" style="display: none;">
-            <!-- Statistics Cards -->
-            <div class="row mb-4">
-                <div class="col-md-3">
-                    <div class="stat-card cgpa-card">
-                        <div class="stat-value" id="current-cgpa">0.00</div>
-                        <div class="stat-label">Current CGPA</div>
+            <!-- Status Header -->
+            <div class="header-info mb-4">
+                <div class="header-stats">
+                    <div class="header-stat-item">
+                        <div class="header-stat-value header-cgpa" id="current-cgpa">0.00</div>
+                        <div class="header-stat-label">Current CGPA</div>
                     </div>
-                </div>
-                <div class="col-md-3">
-                    <div class="stat-card credits-card">
-                        <div class="stat-value" id="total-credits">0</div>
-                        <div class="stat-label">Total Credits</div>
+                    <div class="header-stat-item">
+                        <div class="header-stat-value header-credits" id="total-credits">0</div>
+                        <div class="header-stat-label">Total Credits</div>
                     </div>
-                </div>
-                <div class="col-md-3">
-                    <div class="stat-card courses-card">
-                        <div class="stat-value" id="completed-courses">0</div>
-                        <div class="stat-label">Courses Completed</div>
+                    <div class="header-stat-item">
+                        <div class="header-stat-value" id="completed-courses">0</div>
+                        <div class="header-stat-label">Courses Completed</div>
                     </div>
                 </div>
                 <div class="col-md-3">
@@ -455,8 +607,9 @@
                     <!-- Foundation Level -->
                     <div class="course-section">
                         <h5 class="section-title">
-                            <i class="fas fa-foundation me-2"></i>
-                            Foundation Level (32 Credits)
+                            <i class="fas fa-building-columns me-2"></i>
+                            Foundation Level
+                            <span class="section-credits">0/32 credits</span>
                         </h5>
                         <div id="foundation-courses"></div>
                     </div>
@@ -465,7 +618,8 @@
                     <div class="course-section">
                         <h5 class="section-title">
                             <i class="fas fa-code me-2"></i>
-                            Diploma in Programming (27 Credits)
+                            Diploma in Programming
+                            <span class="section-credits">0/27 credits</span>
                         </h5>
                         <div id="programming-courses"></div>
                     </div>
@@ -474,7 +628,8 @@
                     <div class="course-section">
                         <h5 class="section-title">
                             <i class="fas fa-chart-line me-2"></i>
-                            Diploma in Data Science (28 Credits)
+                            Diploma in Data Science
+                            <span class="section-credits">0/28 credits</span>
                         </h5>
                         
                         <!-- Core Courses -->
@@ -635,16 +790,81 @@
         function updateDashboard() {
             const stats = userData.stats || {
                 cgpa: 0,
-            totalCredits: 0,
-            completedCourses: 0,
-            gradeDistribution: { S: 0, A: 0, B: 0, C: 0, D: 0, E: 0 }
-        };
+                totalCredits: 0,
+                completedCourses: 0,
+                gradeDistribution: { S: 0, A: 0, B: 0, C: 0, D: 0, E: 0 }
+            };
 
-        document.getElementById('current-cgpa').textContent = stats.cgpa.toFixed(3);
-        document.getElementById('total-credits').textContent = stats.totalCredits;
-        document.getElementById('completed-courses').textContent = stats.completedCourses;            // Calculate progress (assuming 142 total credits for degree)
+            document.getElementById('current-cgpa').textContent = stats.cgpa.toFixed(2);
+            document.getElementById('total-credits').textContent = stats.totalCredits;
+            document.getElementById('completed-courses').textContent = stats.completedCourses;
+            
+            // Calculate progress (assuming 142 total credits for degree)
             const progressPercentage = Math.min((stats.totalCredits / 142) * 100, 100);
             document.getElementById('progress-percentage').textContent = progressPercentage.toFixed(1) + '%';
+            
+            // Update section credits
+            updateSectionCredits();
+        }
+        
+        // Update the credits counter for each section
+        function updateSectionCredits() {
+            // Define total credits for each section
+            const sectionTotalCredits = {
+                foundation: 32,
+                programming: 27,
+                dataScience: 28
+            };
+            
+            // Calculate completed credits for each section
+            const sectionCompletedCredits = {
+                foundation: 0,
+                programming: 0,
+                dataScience: 0
+            };
+            
+            // Count foundation credits
+            const foundationCourses = courseGroups.foundation || [];
+            foundationCourses.forEach(course => {
+                if (courseData.courses[course.id]?.grade) {
+                    sectionCompletedCredits.foundation += course.credits;
+                }
+            });
+            
+            // Count programming credits
+            const programmingCourses = courseGroups.programming || [];
+            programmingCourses.forEach(course => {
+                if (courseData.courses[course.id]?.grade) {
+                    sectionCompletedCredits.programming += course.credits;
+                }
+            });
+            
+            // Count data science credits (core + selected option)
+            const dataScienceCoreCourses = courseGroups.dataScience_core || [];
+            dataScienceCoreCourses.forEach(course => {
+                if (courseData.courses[course.id]?.grade) {
+                    sectionCompletedCredits.dataScience += course.credits;
+                }
+            });
+            
+            // Add credits from selected option
+            const optionKey = selectedDataScienceOption === 'option1' ? 'dataScience_option1' : 'dataScience_option2';
+            const optionCourses = courseGroups[optionKey] || [];
+            optionCourses.forEach(course => {
+                if (courseData.courses[course.id]?.grade) {
+                    sectionCompletedCredits.dataScience += course.credits;
+                }
+            });
+            
+            // Update the section credit displays
+            document.querySelector('.section-title:nth-of-type(1) .section-credits').textContent = 
+                `${sectionCompletedCredits.foundation}/${sectionTotalCredits.foundation} credits`;
+                
+            document.querySelector('.section-title:nth-of-type(2) .section-credits').textContent = 
+                `${sectionCompletedCredits.programming}/${sectionTotalCredits.programming} credits`;
+                
+            document.querySelector('.section-title:nth-of-type(3) .section-credits').textContent = 
+                `${sectionCompletedCredits.dataScience}/${sectionTotalCredits.dataScience} credits`;
         }
 
         // Render courses
@@ -673,34 +893,50 @@
             
             container.innerHTML = '';
             
+            // Create a row for course cards
+            const row = document.createElement('div');
+            row.className = 'row g-3';
+            container.appendChild(row);
+            
             const courses = courseGroups[sectionKey] || [];
             courses.forEach(course => {
                 const currentGrade = courseData.courses[course.id]?.grade || '';
                 
+                // Create a column for each course
+                const col = document.createElement('div');
+                col.className = 'col-md-6 col-lg-4';
+                
+                // Create card for course
                 const courseElement = document.createElement('div');
-                courseElement.className = 'course-item';
+                courseElement.className = 'course-card';
                 courseElement.innerHTML = `
-                    <div class="course-info">
-                        <div class="course-name">${course.name}</div>
-                        <div class="course-id">${course.id.toUpperCase()}</div>
-                    </div>
-                    <div class="d-flex align-items-center">
-                        <span class="course-credits">${course.credits} Credits</span>
-                        <select class="grade-select ${currentGrade ? 'grade-' + currentGrade : ''}" 
-                                data-course-id="${course.id}" 
-                                onchange="handleGradeChange('${course.id}', this.value)"
-                                ${sectionKey.includes('option') && !isOptionEnabled(sectionKey) ? 'disabled' : ''}>
-                            <option value="">Select Grade</option>
-                            <option value="S" ${currentGrade === 'S' ? 'selected' : ''}>S (10)</option>
-                            <option value="A" ${currentGrade === 'A' ? 'selected' : ''}>A (9)</option>
-                            <option value="B" ${currentGrade === 'B' ? 'selected' : ''}>B (8)</option>
-                            <option value="C" ${currentGrade === 'C' ? 'selected' : ''}>C (7)</option>
-                            <option value="D" ${currentGrade === 'D' ? 'selected' : ''}>D (6)</option>
-                            <option value="E" ${currentGrade === 'E' ? 'selected' : ''}>E (4)</option>
-                        </select>
+                    <div class="course-code">${course.id.toUpperCase()}</div>
+                    <div class="course-title">${course.name}</div>
+                    <div class="credits-display">${course.credits} credits</div>
+                    <div class="grade-buttons">
+                        <button type="button" class="grade-btn ${currentGrade === 'S' ? 'active' : ''}" 
+                            onclick="handleGradeChange('${course.id}', 'S')" 
+                            ${sectionKey.includes('option') && !isOptionEnabled(sectionKey) ? 'disabled' : ''}>S</button>
+                        <button type="button" class="grade-btn ${currentGrade === 'A' ? 'active' : ''}" 
+                            onclick="handleGradeChange('${course.id}', 'A')"
+                            ${sectionKey.includes('option') && !isOptionEnabled(sectionKey) ? 'disabled' : ''}>A</button>
+                        <button type="button" class="grade-btn ${currentGrade === 'B' ? 'active' : ''}" 
+                            onclick="handleGradeChange('${course.id}', 'B')"
+                            ${sectionKey.includes('option') && !isOptionEnabled(sectionKey) ? 'disabled' : ''}>B</button>
+                        <button type="button" class="grade-btn ${currentGrade === 'C' ? 'active' : ''}" 
+                            onclick="handleGradeChange('${course.id}', 'C')"
+                            ${sectionKey.includes('option') && !isOptionEnabled(sectionKey) ? 'disabled' : ''}>C</button>
+                        <button type="button" class="grade-btn ${currentGrade === 'D' ? 'active' : ''}" 
+                            onclick="handleGradeChange('${course.id}', 'D')"
+                            ${sectionKey.includes('option') && !isOptionEnabled(sectionKey) ? 'disabled' : ''}>D</button>
+                        <button type="button" class="grade-btn ${currentGrade === 'E' ? 'active' : ''}" 
+                            onclick="handleGradeChange('${course.id}', 'E')"
+                            ${sectionKey.includes('option') && !isOptionEnabled(sectionKey) ? 'disabled' : ''}>E</button>
                     </div>
                 `;
-                container.appendChild(courseElement);
+                
+                col.appendChild(courseElement);
+                row.appendChild(col);
             });
         }
 

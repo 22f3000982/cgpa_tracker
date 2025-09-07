@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, render_template, send_file
+from flask import Flask, request, jsonify, render_template, send_file, Response
 from flask_sqlalchemy import SQLAlchemy
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 from flask_bcrypt import Bcrypt
@@ -684,25 +684,279 @@ def admin_required(f):
 @app.route('/api/admin/backup', methods=['GET'])
 @admin_required
 def backup_database():
-    """Download database backup - Note: Limited functionality on Vercel"""
+    """Download database backup - Works in both local and serverless environments"""
     try:
-        return jsonify({
-            'message': 'Database backup not available in serverless environment',
-            'note': 'Consider using external database service for production'
-        }), 501
+        # Check if we're in serverless environment
+        is_serverless = os.environ.get('VERCEL_REGION') is not None
+        
+        if is_serverless:
+            # In serverless, export data as JSON
+            try:
+                # Fetch all data from database
+                users_data = []
+                for user in User.query.all():
+                    user_dict = user.to_dict()
+                    # Add user's data
+                    user_data = []
+                    for data in UserData.query.filter_by(user_id=user.id).all():
+                        user_data.append({
+                            'id': data.id,
+                            'semester': data.semester,
+                            'credits': data.credits,
+                            'gpa': data.gpa,
+                            'notes': data.notes,
+                            'created_at': data.created_at.isoformat() if data.created_at else None
+                        })
+                    user_dict['data'] = user_data
+                    
+                    # Add user's CGPA history
+                    cgpa_history = []
+                    for history in CGPAHistory.query.filter_by(user_id=user.id).all():
+                        cgpa_history.append({
+                            'id': history.id,
+                            'cgpa': history.cgpa,
+                            'timestamp': history.timestamp.isoformat() if history.timestamp else None
+                        })
+                    user_dict['cgpa_history'] = cgpa_history
+                    
+                    users_data.append(user_dict)
+                
+                # Create a response with JSON data
+                backup_data = {
+                    'backup_date': datetime.now().isoformat(),
+                    'version': '1.0',
+                    'environment': 'serverless',
+                    'users': users_data
+                }
+                
+                # Return as downloadable JSON file
+                import json
+                response_data = json.dumps(backup_data, indent=2)
+                response = Response(
+                    response_data,
+                    mimetype='application/json',
+                    headers={'Content-Disposition': 'attachment; filename=cgpa_tracker_backup.json'}
+                )
+                return response
+                
+            except Exception as export_error:
+                print(f"Error exporting data: {export_error}")
+                return jsonify({
+                    'message': 'Error creating database backup',
+                    'error': str(export_error)
+                }), 500
+        else:
+            # In local environment, use SQLite backup
+            # Create backup directory if it doesn't exist
+            backup_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'backups')
+            os.makedirs(backup_dir, exist_ok=True)
+            
+            # Generate backup filename with timestamp
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            backup_filename = f"cgpa_tracker_backup_{timestamp}.db"
+            backup_path = os.path.join(backup_dir, backup_filename)
+            
+            # Get database path from config
+            db_uri = app.config['SQLALCHEMY_DATABASE_URI']
+            if db_uri.startswith('sqlite:///'):
+                db_path = db_uri[10:]  # Remove sqlite:///
+                if not os.path.isabs(db_path):
+                    db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), db_path)
+                    
+                # Copy database file
+                shutil.copy2(db_path, backup_path)
+                
+                # Return the file for download
+                return send_file(
+                    backup_path,
+                    as_attachment=True,
+                    download_name=backup_filename,
+                    mimetype='application/octet-stream'
+                )
+            else:
+                return jsonify({'message': 'Backup only supports SQLite databases'}), 400
     except Exception as e:
+        print(f"Backup error: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/admin/restore', methods=['POST'])
 @admin_required
 def restore_database():
-    """Restore database from uploaded file - Note: Limited functionality on Vercel"""
+    """Restore database from uploaded file - Supports JSON restore in serverless"""
     try:
-        return jsonify({
-            'message': 'Database restore not available in serverless environment',
-            'note': 'Consider using external database service for production'
-        }), 501
+        # Check if we're in serverless environment
+        is_serverless = os.environ.get('VERCEL_REGION') is not None
+        
+        if is_serverless:
+            # For serverless, we can import from JSON
+            if 'file' not in request.files:
+                return jsonify({'message': 'No file part in the request'}), 400
+                
+            file = request.files['file']
+            if file.filename == '':
+                return jsonify({'message': 'No file selected'}), 400
+                
+            if not file.filename.endswith('.json'):
+                return jsonify({'message': 'Only JSON backup files are supported in serverless environment'}), 400
+                
+            try:
+                # Read JSON data
+                import json
+                backup_data = json.loads(file.read().decode('utf-8'))
+                
+                # Validate backup format
+                if 'users' not in backup_data:
+                    return jsonify({'message': 'Invalid backup format'}), 400
+                    
+                # Clear existing data
+                try:
+                    UserData.query.delete()
+                    CGPAHistory.query.delete()
+                    User.query.filter(User.username != 'admin').delete()
+                    db.session.commit()
+                    print("Existing data cleared")
+                except Exception as clear_error:
+                    print(f"Error clearing data: {clear_error}")
+                    db.session.rollback()
+                    return jsonify({'message': f'Error clearing existing data: {str(clear_error)}'}), 500
+                
+                # Import users
+                admin_user = User.query.filter_by(username='admin').first()
+                admin_id = admin_user.id if admin_user else None
+                
+                users_created = 0
+                for user_data in backup_data['users']:
+                    # Skip admin user
+                    if user_data.get('username') == 'admin':
+                        continue
+                        
+                    # Create user
+                    try:
+                        new_user = User(
+                            username=user_data.get('username'),
+                            email=user_data.get('email'),
+                            password_hash=user_data.get('password_hash', bcrypt.generate_password_hash('changeme').decode('utf-8')),
+                            is_active=user_data.get('is_active', True),
+                            is_admin=user_data.get('is_admin', False)
+                        )
+                        if 'created_at' in user_data and user_data['created_at']:
+                            new_user.created_at = datetime.fromisoformat(user_data['created_at'])
+                        if 'last_login' in user_data and user_data['last_login']:
+                            new_user.last_login = datetime.fromisoformat(user_data['last_login'])
+                            
+                        db.session.add(new_user)
+                        db.session.flush()  # Get the ID without committing
+                        
+                        # Import user data
+                        if 'data' in user_data:
+                            for data_item in user_data['data']:
+                                new_data = UserData(
+                                    user_id=new_user.id,
+                                    semester=data_item.get('semester'),
+                                    credits=data_item.get('credits'),
+                                    gpa=data_item.get('gpa'),
+                                    notes=data_item.get('notes')
+                                )
+                                if 'created_at' in data_item and data_item['created_at']:
+                                    new_data.created_at = datetime.fromisoformat(data_item['created_at'])
+                                db.session.add(new_data)
+                                
+                        # Import CGPA history
+                        if 'cgpa_history' in user_data:
+                            for history_item in user_data['cgpa_history']:
+                                new_history = CGPAHistory(
+                                    user_id=new_user.id,
+                                    cgpa=history_item.get('cgpa')
+                                )
+                                if 'timestamp' in history_item and history_item['timestamp']:
+                                    new_history.timestamp = datetime.fromisoformat(history_item['timestamp'])
+                                db.session.add(new_history)
+                                
+                        users_created += 1
+                    except Exception as user_error:
+                        print(f"Error importing user {user_data.get('username')}: {user_error}")
+                        # Continue with other users
+                        
+                # Commit all changes
+                db.session.commit()
+                return jsonify({
+                    'message': 'Database restored successfully',
+                    'users_imported': users_created
+                })
+                
+            except json.JSONDecodeError:
+                return jsonify({'message': 'Invalid JSON format'}), 400
+            except Exception as import_error:
+                print(f"Error importing data: {import_error}")
+                import traceback
+                traceback.print_exc()
+                db.session.rollback()
+                return jsonify({'message': f'Error importing data: {str(import_error)}'}), 500
+        else:
+            # For local environment, use SQLite restore
+            if 'file' not in request.files:
+                return jsonify({'message': 'No file part in the request'}), 400
+                
+            file = request.files['file']
+            if file.filename == '':
+                return jsonify({'message': 'No file selected'}), 400
+                
+            if not file.filename.endswith('.db'):
+                return jsonify({'message': 'Only .db backup files are supported'}), 400
+                
+            try:
+                # Create a temporary file to store the uploaded database
+                temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.db')
+                file.save(temp_file.name)
+                temp_file.close()
+                
+                # Get the path to the current database
+                db_uri = app.config['SQLALCHEMY_DATABASE_URI']
+                if db_uri.startswith('sqlite:///'):
+                    db_path = db_uri[10:]  # Remove sqlite:///
+                    if not os.path.isabs(db_path):
+                        db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), db_path)
+                        
+                    # Create a backup before overwriting
+                    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    backup_filename = f"cgpa_tracker_backup_before_restore_{timestamp}.db"
+                    backup_dir = os.path.join(os.path.dirname(db_path))
+                    backup_path = os.path.join(backup_dir, backup_filename)
+                    
+                    # Make backup directory if it doesn't exist
+                    os.makedirs(os.path.dirname(backup_path), exist_ok=True)
+                    
+                    # Create backup
+                    shutil.copy2(db_path, backup_path)
+                    
+                    # Close database connection
+                    db.session.close()
+                    db.engine.dispose()
+                    
+                    # Replace current database with uploaded one
+                    shutil.copy2(temp_file.name, db_path)
+                    
+                    # Remove temp file
+                    os.unlink(temp_file.name)
+                    
+                    return jsonify({
+                        'message': 'Database restored successfully',
+                        'backup_created': backup_filename
+                    })
+                else:
+                    return jsonify({'message': 'Restore only supports SQLite databases'}), 400
+                    
+            except Exception as restore_error:
+                print(f"Restore error: {restore_error}")
+                import traceback
+                traceback.print_exc()
+                return jsonify({'message': f'Error restoring database: {str(restore_error)}'}), 500
     except Exception as e:
+        print(f"Restore error: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/admin/users', methods=['GET'])

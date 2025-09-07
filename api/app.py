@@ -205,6 +205,13 @@ def admin():
 @app.route('/api/auth/register', methods=['POST'])
 def register():
     try:
+        # Ensure tables exist first (needed for serverless environment)
+        with app.app_context():
+            if not db.engine.dialect.has_table(db.engine, 'user'):
+                print("Tables don't exist. Creating now...")
+                db.create_all()
+                print("Tables created successfully.")
+
         data = request.get_json()
         username = data.get('username')
         email = data.get('email')
@@ -215,20 +222,25 @@ def register():
         if not username or not password:
             return jsonify({'message': 'Username and password are required'}), 400
 
-        # Check if user already exists
-        existing_user = None
-        if email:
-            existing_user = User.query.filter(
-                (User.username == username) | (User.email == email)
-            ).first()
-        else:
-            existing_user = User.query.filter(User.username == username).first()
-
-        if existing_user:
-            if existing_user.username == username:
-                return jsonify({'message': 'Username already exists. Please choose a different username.'}), 409
+        # Check if user already exists - with extra error handling for serverless
+        try:
+            # Check if user already exists
+            existing_user = None
+            if email:
+                existing_user = User.query.filter(
+                    (User.username == username) | (User.email == email)
+                ).first()
             else:
-                return jsonify({'message': 'Email already exists. Please use a different email.'}), 409
+                existing_user = User.query.filter(User.username == username).first()
+                
+            if existing_user:
+                if existing_user.username == username:
+                    return jsonify({'message': 'Username already exists. Please choose a different username.'}), 409
+                else:
+                    return jsonify({'message': 'Email already exists. Please use a different email.'}), 409
+        except Exception as check_error:
+            print(f"Error checking existing user: {str(check_error)}")
+            # Continue anyway since this might be a brand new database
 
         # Create new user
         password_hash = bcrypt.generate_password_hash(password).decode('utf-8')
@@ -510,8 +522,21 @@ def list_users():
 def create_admin_user():
     """Create admin user if it doesn't exist"""
     try:
-        admin = User.query.filter_by(username='admin').first()
+        # First check if the table exists (critical for serverless)
+        if not db.engine.dialect.has_table(db.engine, 'user'):
+            print("Users table doesn't exist yet when creating admin, creating tables...")
+            db.create_all()
+            print("Tables created in admin user creation")
+        
+        # Now try to create the admin user
+        try:
+            admin = User.query.filter_by(username='admin').first()
+        except Exception as query_error:
+            print(f"Error querying for admin user: {query_error}")
+            admin = None  # Assume admin doesn't exist if there's an error
+        
         if not admin:
+            print("Creating admin user...")
             password_hash = bcrypt.generate_password_hash('4129').decode('utf-8')
             admin = User(
                 username='admin',
@@ -519,9 +544,13 @@ def create_admin_user():
                 password_hash=password_hash,
                 is_admin=True
             )
-            db.session.add(admin)
-            db.session.commit()
-            print("Admin user created successfully!")
+            try:
+                db.session.add(admin)
+                db.session.commit()
+                print("Admin user created successfully!")
+            except Exception as commit_error:
+                print(f"Error committing admin user: {commit_error}")
+                db.session.rollback()
         else:
             print("Admin user already exists")
     except Exception as e:
@@ -619,18 +648,31 @@ def admin_stats():
 def init_db():
     """Initialize database and create admin user"""
     try:
-        db.create_all()
+        # First check if we can connect to the database
+        connection = db.engine.connect()
+        connection.close()
+        print("Database connection successful")
+        
+        # Now create tables
+        try:
+            db.create_all()
+            print("Database tables created successfully")
+        except Exception as table_error:
+            print(f"Error creating tables: {table_error}")
+        
+        # Now create admin user
         create_admin_user()
         print("Database initialized successfully")
     except Exception as e:
         print(f"Error initializing database: {e}")
 
-# Initialize on import for Vercel - only if we're on Vercel or this is the first run
+# Initialize on import for Vercel - always initialize for serverless environment
 with app.app_context():
     try:
-        # Check if users table exists before initializing
-        if not db.engine.dialect.has_table(db.engine, 'user'):
-            init_db()
+        print("Starting database initialization for serverless environment...")
+        # Force initialization for serverless - tables need to be created each time
+        init_db()
+        print("Database initialization completed for serverless")
     except Exception as e:
         print(f"Database initialization error (non-critical): {e}")
 

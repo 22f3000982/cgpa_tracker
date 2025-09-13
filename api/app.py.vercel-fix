@@ -1,0 +1,1391 @@
+from flask import Flask, request, jsonify, render_template, send_file, Response
+from flask_sqlalchemy import SQLAlchemy
+from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
+from flask_bcrypt import Bcrypt
+from flask_cors import CORS
+from datetime import datetime, timedelta, timezone
+import json
+import os
+import shutil
+import tempfile
+import io
+
+app = Flask(__name__)
+
+# Configuration for Vercel - use in-memory SQLite for serverless environment
+is_vercel = os.environ.get('VERCEL_REGION') is not None
+if is_vercel:
+    # We're on Vercel, use in-memory SQLite
+    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///:memory:'
+    print("Using in-memory SQLite database for Vercel deployment")
+else:
+    # Local development
+    app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///cgpa_tracker.db')
+    print(f"Using SQLite database: {app.config['SQLALCHEMY_DATABASE_URI']}")
+
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'your-production-secret-key-change-this')
+app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(days=7)
+app.config['JWT_ALGORITHM'] = 'HS256'
+
+# Enable debug mode for better error reporting in development
+app.debug = not is_vercel and os.environ.get('FLASK_ENV') != 'production'
+
+# Initialize extensions
+db = SQLAlchemy(app)
+jwt = JWTManager(app)
+bcrypt = Bcrypt(app)
+CORS(app, resources={r"/*": {"origins": "*"}})
+
+# Models
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    email = db.Column(db.String(120), unique=True, nullable=True)
+    password_hash = db.Column(db.String(128), nullable=False)
+    created_at = db.Column(db.String(50), default=lambda: datetime.now(timezone.utc).isoformat())
+    last_login = db.Column(db.String(50))
+    is_active = db.Column(db.Boolean, default=True)
+    is_admin = db.Column(db.Boolean, default=False)
+    
+    # Relationships
+    user_data = db.relationship('UserData', backref='user', lazy=True)
+    cgpa_history = db.relationship('CGPAHistory', backref='user', lazy=True)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'username': self.username,
+            'email': self.email,
+            'is_admin': self.is_admin,
+            'created_at': self.created_at
+        }
+
+class UserData(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    course_data = db.Column(db.Text)  # JSON string
+    target_cgpa = db.Column(db.Float)
+    updated_at = db.Column(db.String(50), default=lambda: datetime.now(timezone.utc).isoformat())
+
+class CGPAHistory(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    cgpa = db.Column(db.Float, nullable=False)
+    total_credits = db.Column(db.Integer, nullable=False)
+    grade_points = db.Column(db.Float, nullable=False)
+    recorded_at = db.Column(db.String(50), default=lambda: datetime.now(timezone.utc).isoformat())
+
+# Grade Points and Course Information
+GRADE_POINTS = {'S': 10, 'A': 9, 'B': 8, 'C': 7, 'D': 6, 'E': 4}
+
+COURSE_NAMES = {
+    # Foundation Level
+    'foundation-1': 'Mathematics for Data Science I',
+    'foundation-2': 'Statistics for Data Science I',
+    'foundation-3': 'Computational Thinking',
+    'foundation-4': 'English I',
+    'foundation-5': 'Mathematics for Data Science II',
+    'foundation-6': 'Statistics for Data Science II',
+    'foundation-7': 'Programming in Python',
+    'foundation-8': 'English II',
+    
+    # Programming Diploma
+    'programming-1': 'Database Management Systems',
+    'programming-2': 'Programming, Data Structures and Algorithms using Python',
+    'programming-3': 'Modern Application Development I',
+    'programming-4': 'Modern Application Development I - Project',
+    'programming-5': 'Programming Concepts using Java',
+    'programming-6': 'Modern Application Development II',
+    'programming-7': 'Modern Application Development II - Project',
+    'programming-8': 'System Commands',
+    
+    # Data Science Diploma - Core Courses
+    'BSCS2004': 'Machine Learning Foundations',
+    'BSMS2001': 'Business Data Management',
+    'BSCS2007': 'Machine Learning Techniques',
+    'BSCS2008': 'Machine Learning Practice',
+    'BSCS2008P': 'Machine Learning Practice - Project',
+    'BSSE2002': 'Tools in Data Science',
+    
+    # Data Science Diploma - Option 1 (Business Analytics Path)
+    'BSMS2002': 'Business Analytics',
+    'BSMS2001P': 'Business Data Management - Project',
+    
+    # Data Science Diploma - Option 2 (Generative AI Path)
+    'BSDA2001': 'Introduction to Deep Learning and Generative AI',
+    'BSDA2001P': 'Deep Learning and Generative AI - Project'
+}
+
+def get_credits_for_course(course_id):
+    """Get credits for a specific course based on course ID"""
+    if not course_id:
+        return 4
+    
+    # Handle old format (section-index) for backward compatibility
+    if '-' in course_id:
+        section, index = course_id.split('-')
+        
+        # Programming Diploma special cases
+        if section == 'programming':
+            programming_credits = {
+                '4': 2,  # Modern Application Development I - Project
+                '7': 2,  # Modern Application Development II - Project
+                '8': 3,  # System Commands
+            }
+            return programming_credits.get(index, 4)
+        
+        # Data Science Diploma special cases (old format)
+        elif section == 'dataScience':
+            datascience_credits = {
+                '5': 2,  # Machine Learning Practice
+                '6': 3,  # Tools in Data Science
+                '8': 3,  # Machine Learning Techniques
+            }
+            return datascience_credits.get(index, 4)
+    
+    # Handle new course ID format (e.g., BSCS2004, BSMS2001P)
+    else:
+        # Project courses have 2 credits
+        if course_id.endswith('P'):
+            return 2
+        
+        # Specific course credit mappings
+        course_credits = {
+            'BSSE2002': 3,  # Tools in Data Science
+            # All other courses default to 4 credits
+        }
+        return course_credits.get(course_id, 4)
+    
+    # Foundation and other courses are 4 credits
+    return 4
+
+def calculate_stats(course_data):
+    """Calculate CGPA and other statistics from course data"""
+    total_points = 0
+    total_credits = 0
+    completed_courses = 0
+    grade_distribution = {'S': 0, 'A': 0, 'B': 0, 'C': 0, 'D': 0, 'E': 0}
+
+    if not course_data or 'courses' not in course_data:
+        return {
+            'cgpa': 0,
+            'totalCredits': 0,
+            'completedCourses': 0,
+            'gradeDistribution': grade_distribution,
+            'totalPoints': 0
+        }
+
+    for course_id, course_info in course_data['courses'].items():
+        if 'grade' in course_info and course_info['grade'] in GRADE_POINTS:
+            credits = get_credits_for_course(course_id)
+            grade_points = GRADE_POINTS[course_info['grade']]
+            
+            total_points += grade_points * credits
+            total_credits += credits
+            completed_courses += 1
+            grade_distribution[course_info['grade']] += 1
+
+    cgpa = (total_points / total_credits) if total_credits > 0 else 0
+
+    return {
+        'cgpa': round(cgpa, 3),
+        'totalCredits': total_credits,
+        'completedCourses': completed_courses,
+        'gradeDistribution': grade_distribution,
+        'totalPoints': total_points
+    }
+
+# Routes
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/dashboard')
+def dashboard():
+    return render_template('dashboard.html')
+
+@app.route('/admin')
+def admin():
+    return render_template('admin.html')
+
+@app.route('/api/auth/register', methods=['POST'])
+def register():
+    try:
+        # Make sure the database is initialized for this request
+        with app.app_context():
+            try:
+                # Force table creation for serverless environment
+                if os.environ.get('VERCEL_REGION'):
+                    db.create_all()
+                    print("Tables created for registration endpoint")
+            except Exception as table_error:
+                print(f"Table creation error (non-critical): {table_error}")
+
+        # Get and validate request data
+        try:
+            data = request.get_json()
+            if not data:
+                return jsonify({'message': 'Invalid JSON data'}), 400
+        except Exception as json_error:
+            print(f"Error parsing JSON: {json_error}")
+            return jsonify({'message': 'Invalid request format'}), 400
+
+        username = data.get('username')
+        email = data.get('email')
+        password = data.get('password')
+
+        print(f"DEBUG REGISTER: Attempting registration for: {username}, {email}")
+
+        if not username or not password:
+            return jsonify({'message': 'Username and password are required'}), 400
+
+        # Check if user already exists - with simplified logic for serverless
+        try:
+            # Simple query to check if user exists by username
+            existing_user = User.query.filter_by(username=username).first()
+            
+            if existing_user:
+                return jsonify({'message': 'Username already exists. Please choose a different username.'}), 409
+            
+            # If email provided, check that too
+            if email:
+                existing_email = User.query.filter_by(email=email).first()
+                if existing_email:
+                    return jsonify({'message': 'Email already exists. Please use a different email.'}), 409
+        except Exception as check_error:
+            print(f"Error checking existing user: {str(check_error)}")
+            # Continue anyway since this might be a brand new database
+
+        # Create new user with safer error handling
+        try:
+            # Store password directly without hashing for simplicity
+            password_hash = password
+            print("Password stored directly")
+            
+            new_user = User(
+                username=username,
+                email=email,
+                password_hash=password_hash,
+                created_at=datetime.now(timezone.utc).isoformat(),
+                is_active=True
+            )
+            print("User object created")
+            
+            db.session.add(new_user)
+            print("User added to session")
+            
+            db.session.commit()
+            print(f"DEBUG REGISTER: User created successfully: {username}")
+            
+            # Return success response
+            return jsonify({
+                'message': 'User created successfully',
+                'username': username
+            }), 201
+            
+        except Exception as db_error:
+            print(f"Error during user creation/commit: {str(db_error)}")
+            db.session.rollback()
+            # Return a cleaner error message to the client
+            return jsonify({'message': 'Could not create user account. Please try again later.'}), 500
+
+    except Exception as e:
+        print(f"DEBUG REGISTER ERROR: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        
+        try:
+            db.session.rollback()
+        except:
+            pass
+            
+        return jsonify({
+            'message': 'Registration failed',
+            'error': 'An unexpected error occurred during registration'
+        }), 500
+
+@app.route('/api/auth/login', methods=['POST'])
+def login():
+    try:
+        # For serverless environment, make sure tables and admin user exist
+        if os.environ.get('VERCEL_REGION'):
+            try:
+                # Force database initialization for each login attempt in serverless
+                with app.app_context():
+                    db.create_all()
+                    print("Database tables created")
+                    # Special handling for admin user
+                    admin_exists = User.query.filter_by(username='admin').first() is not None
+                    if not admin_exists:
+                        print("Admin user doesn't exist, creating it now...")
+                        admin = User(
+                            username='admin',
+                            email='admin@cgpatracker.com',
+                            password_hash='4129',  # Store plain password
+                            is_admin=True,
+                            is_active=True,
+                            created_at=datetime.now(timezone.utc).isoformat()
+                        )
+                        db.session.add(admin)
+                        db.session.commit()
+                        print("Admin user created for login attempt")
+            except Exception as init_error:
+                print(f"Error in login database initialization: {init_error}")
+                # Continue anyway, maybe tables already exist
+
+        # Parse request data
+        try:
+            data = request.get_json()
+            if not data:
+                return jsonify({'message': 'Invalid JSON data'}), 400
+        except Exception as json_error:
+            print(f"Error parsing login JSON: {json_error}")
+            return jsonify({'message': 'Invalid request format'}), 400
+
+        username_or_email = data.get('username')
+        password = data.get('password')
+
+        print(f"DEBUG LOGIN: Attempting login for: {username_or_email}")
+
+        if not username_or_email or not password:
+            return jsonify({'message': 'Username/email and password are required'}), 400
+
+        # Special handling for admin login - hardcoded check as a fallback
+        if username_or_email == 'admin' and password == '4129':
+            print("Admin credentials matched, searching for admin user...")
+            # Try to find admin user or create if not found
+            try:
+                admin_user = User.query.filter_by(username='admin').first()
+                if not admin_user:
+                    # Create admin user if it doesn't exist
+                    password_hash = bcrypt.generate_password_hash('4129').decode('utf-8')
+                    admin_user = User(
+                        username='admin',
+                        email='admin@cgpatracker.com',
+                        password_hash=password_hash,
+                        is_admin=True,
+                        created_at=datetime.now(timezone.utc)
+                    )
+                    db.session.add(admin_user)
+                    db.session.commit()
+                    print("Admin user created during login")
+                
+                # Update last login for admin
+                admin_user.last_login = datetime.now(timezone.utc)
+                db.session.commit()
+                
+                # Create access token for admin
+                access_token = create_access_token(identity=str(admin_user.id))
+                print("Admin login successful with special handling")
+                
+                return jsonify({
+                    'access_token': access_token,
+                    'user': admin_user.to_dict(),
+                    'message': 'Admin login successful'
+                })
+            except Exception as admin_error:
+                print(f"Error in admin special handling: {admin_error}")
+                # Fall through to regular login flow
+        
+        try:
+            try:
+                # Find user by username or email
+                user = User.query.filter(
+                    (User.username == username_or_email) | 
+                    (User.email == username_or_email)
+                ).first()
+                print(f"DEBUG LOGIN: User found: {user is not None}")
+            except Exception as e:
+                print(f"DEBUG LOGIN ERROR: {e}")
+                # Handle datetime parsing issues by creating a fresh admin user
+                if username_or_email == 'admin' and password == '4129':
+                    # Reset the admin user if there's a datetime parsing issue
+                    try:
+                        admin = User.query.filter_by(username='admin').first()
+                        if admin:
+                            db.session.delete(admin)
+                            db.session.commit()
+                        
+                        # Create new admin user
+                        admin = User(
+                            username='admin',
+                            password_hash='4129',
+                            email='admin@example.com',
+                            is_active=True,
+                            is_admin=True,
+                            created_at=datetime.now(timezone.utc).isoformat()
+                        )
+                        db.session.add(admin)
+                        db.session.commit()
+                        user = admin
+                    except Exception as create_error:
+                        print(f"ERROR recreating admin user: {create_error}")
+                        return jsonify({'message': 'Database error during login'}), 500
+                else:
+                    return jsonify({'message': 'Login failed. Please try again.'}), 401
+
+            if user and user.password_hash == password:
+                print(f"DEBUG LOGIN: Password check passed for user: {user.username}")
+                # Update last login
+                user.last_login = datetime.now(timezone.utc).isoformat()
+                db.session.commit()
+
+                # Create access token
+                access_token = create_access_token(identity=str(user.id))
+                print(f"DEBUG LOGIN: Token created successfully")
+
+                return jsonify({
+                    'access_token': access_token,
+                    'user': user.to_dict(),
+                    'message': 'Login successful'
+                })
+
+            print(f"DEBUG LOGIN: Authentication failed")
+            return jsonify({'message': 'Invalid credentials'}), 401
+        except Exception as query_error:
+            print(f"Error during user query: {query_error}")
+            return jsonify({'message': 'Login failed due to database error'}), 500
+
+    except Exception as e:
+        print(f"DEBUG LOGIN ERROR: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'message': 'Login failed', 'error': str(e)}), 500
+
+@app.route('/api/auth/verify', methods=['GET'])
+@jwt_required()
+def verify_token():
+    try:
+        user_id = int(get_jwt_identity())
+        user = User.query.get(user_id)
+        
+        if user and user.is_active:
+            return jsonify({'valid': True, 'user': user.to_dict()})
+        
+        return jsonify({'valid': False}), 401
+    
+    except Exception as e:
+        return jsonify({'valid': False, 'error': str(e)}), 401
+
+@app.route('/api/test-auth', methods=['GET'])
+@jwt_required()
+def test_auth():
+    try:
+        user_id = int(get_jwt_identity())
+        print(f"DEBUG TEST: User ID: {user_id}")
+        return jsonify({'user_id': user_id, 'message': 'Authentication working'})
+    except Exception as e:
+        print(f"DEBUG TEST: Error: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/user/data', methods=['GET'])
+@jwt_required()
+def get_user_data():
+    try:
+        user_id = int(get_jwt_identity())
+        print(f"DEBUG: User ID from token: {user_id}")  # Debug line
+        
+        if not user_id:
+            return jsonify({'message': 'Invalid token'}), 401
+            
+        user_data = UserData.query.filter_by(user_id=user_id).first()
+
+        if not user_data:
+            print(f"DEBUG: No user data found for user_id: {user_id}")  # Debug line
+            return jsonify({
+                'course_data': {'courses': {}},
+                'target_cgpa': None,
+                'stats': calculate_stats({'courses': {}})
+            })
+
+        course_data = json.loads(user_data.course_data) if user_data.course_data else {'courses': {}}
+        stats = calculate_stats(course_data)
+
+        return jsonify({
+            'course_data': course_data,
+            'target_cgpa': user_data.target_cgpa,
+            'stats': stats
+        })
+
+    except Exception as e:
+        print(f"DEBUG: Error in get_user_data: {str(e)}")  # Debug line
+        return jsonify({'message': 'Failed to fetch user data', 'error': str(e)}), 500
+
+@app.route('/api/user/data', methods=['POST'])
+@jwt_required()
+def save_user_data():
+    try:
+        user_id = int(get_jwt_identity())
+        print(f"DEBUG: Saving data for user_id: {user_id}")  # Debug line
+        
+        if not user_id:
+            return jsonify({'message': 'Invalid token'}), 401
+            
+        data = request.get_json()
+        print(f"DEBUG: Received data: {data}")  # Debug line
+        
+        course_data = data.get('course_data', {})
+        target_cgpa = data.get('target_cgpa')
+
+        # Find or create user data record
+        user_data = UserData.query.filter_by(user_id=user_id).first()
+        
+        if not user_data:
+            user_data = UserData(user_id=user_id)
+            db.session.add(user_data)
+            print(f"DEBUG: Created new UserData record for user_id: {user_id}")  # Debug line
+
+        # Update data
+        user_data.course_data = json.dumps(course_data)
+        user_data.target_cgpa = target_cgpa
+        user_data.updated_at = datetime.now(timezone.utc)
+
+        # Calculate and save CGPA history
+        stats = calculate_stats(course_data)
+        if stats['cgpa'] > 0:
+            cgpa_history = CGPAHistory(
+                user_id=user_id,
+                cgpa=stats['cgpa'],
+                total_credits=stats['totalCredits'],
+                grade_points=stats['totalPoints']
+            )
+            db.session.add(cgpa_history)
+
+        db.session.commit()
+        print(f"DEBUG: Data saved successfully for user_id: {user_id}")  # Debug line
+
+        return jsonify({
+            'message': 'Data saved successfully',
+            'stats': stats
+        })
+
+    except Exception as e:
+        print(f"DEBUG: Error in save_user_data: {str(e)}")  # Debug line
+        db.session.rollback()
+        return jsonify({'message': 'Failed to save data', 'error': str(e)}), 500
+
+@app.route('/api/user/cgpa-history', methods=['GET'])
+@jwt_required()
+def get_cgpa_history():
+    try:
+        user_id = int(get_jwt_identity())
+        history = CGPAHistory.query.filter_by(user_id=user_id).order_by(CGPAHistory.recorded_at).all()
+        
+        history_data = []
+        for record in history:
+            history_data.append({
+                'cgpa': record.cgpa,
+                'total_credits': record.total_credits,
+                'grade_points': record.grade_points,
+                'recorded_at': record.recorded_at.isoformat()
+            })
+        
+        return jsonify({'history': history_data})
+    
+    except Exception as e:
+        return jsonify({'message': 'Failed to fetch CGPA history', 'error': str(e)}), 500
+
+@app.route('/api/courses', methods=['GET'])
+def get_courses():
+    """Get all available courses with their names and credits, grouped by section"""
+    
+    # Define course groups
+    course_groups = {
+        'foundation': [],
+        'programming': [],
+        'dataScience_core': [],
+        'dataScience_option1': [],
+        'dataScience_option2': []
+    }
+    
+    # Option 1 courses (Business Analytics Path)
+    option1_courses = {'BSMS2002', 'BSMS2001P'}
+    
+    # Option 2 courses (Generative AI Path)  
+    option2_courses = {'BSDA2001', 'BSDA2001P'}
+    
+    # Core Data Science courses (always available)
+    core_ds_courses = {'BSCS2004', 'BSMS2001', 'BSCS2007', 'BSCS2008', 'BSCS2008P', 'BSSE2002'}
+    
+    for course_id, course_name in COURSE_NAMES.items():
+        credits = get_credits_for_course(course_id)
+        course_obj = {
+            'id': course_id,
+            'name': course_name,
+            'credits': credits
+        }
+        
+        if course_id.startswith('foundation'):
+            course_groups['foundation'].append(course_obj)
+        elif course_id.startswith('programming'):
+            course_groups['programming'].append(course_obj)
+        elif course_id in core_ds_courses:
+            course_groups['dataScience_core'].append(course_obj)
+        elif course_id in option1_courses:
+            course_groups['dataScience_option1'].append(course_obj)
+        elif course_id in option2_courses:
+            course_groups['dataScience_option2'].append(course_obj)
+    
+    # Debug information
+    print("DEBUG: Course Groups populated:")
+    for section, courses in course_groups.items():
+        print(f"  {section}: {len(courses)} courses")
+        
+    response_data = {
+        'courses': course_groups,
+        'options': {
+            'dataScience': {
+                'option1': {
+                    'name': 'Business Analytics Path',
+                    'description': 'Business Analytics + Business Data Management Project',
+                    'courses': ['BSMS2002', 'BSMS2001P']
+                },
+                'option2': {
+                    'name': 'Generative AI Path', 
+                    'description': 'Introduction to Deep Learning and Generative AI + Project',
+                    'courses': ['BSDA2001', 'BSDA2001P']
+                }
+            }
+        }
+    }
+    
+    print("DEBUG: Returning courses data with foundation courses count:", 
+          len(response_data['courses'].get('foundation', [])))
+    
+    return jsonify(response_data)
+
+@app.route('/api/admin/users', methods=['GET'])
+def list_users():
+    """Debug endpoint to list all users (remove in production)"""
+    try:
+        users = User.query.all()
+        user_list = []
+        for user in users:
+            user_list.append({
+                'id': user.id,
+                'username': user.username,
+                'email': user.email,
+                'created_at': user.created_at,
+                'last_login': user.last_login
+            })
+        return jsonify({'users': user_list, 'count': len(user_list)})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+# Admin functionality
+def create_admin_user():
+    """Create admin user if it doesn't exist"""
+    try:
+        # First check if the table exists (critical for serverless)
+        if not db.engine.dialect.has_table(db.engine, 'user'):
+            print("Users table doesn't exist yet when creating admin, creating tables...")
+            db.create_all()
+            print("Tables created in admin user creation")
+        
+        # Now try to create the admin user
+        try:
+            admin = User.query.filter_by(username='admin').first()
+        except Exception as query_error:
+            print(f"Error querying for admin user: {query_error}")
+            admin = None  # Assume admin doesn't exist if there's an error
+        
+        if not admin:
+            print("Creating admin user...")
+            password_hash = bcrypt.generate_password_hash('4129').decode('utf-8')
+            admin = User(
+                username='admin',
+                email='admin@cgpatracker.com',
+                password_hash=password_hash,
+                is_admin=True
+            )
+            try:
+                db.session.add(admin)
+                db.session.commit()
+                print("Admin user created successfully!")
+            except Exception as commit_error:
+                print(f"Error committing admin user: {commit_error}")
+                db.session.rollback()
+        else:
+            print("Admin user already exists")
+    except Exception as e:
+        print(f"Error creating admin user: {e}")
+
+def admin_required(f):
+    """Decorator to require admin privileges"""
+    from functools import wraps
+    from flask import request
+    
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        try:
+            # First check for JWT token
+            auth_header = request.headers.get('Authorization')
+            print(f"Auth header: {auth_header[:20] if auth_header else 'None'}")
+            
+            # Special handling for Vercel environment
+            is_vercel = os.environ.get('VERCEL_REGION') is not None
+            if is_vercel:
+                print("Running in Vercel environment - special auth handling")
+                
+                # Check if the token is our special admin bypass token
+                if auth_header and auth_header == 'Bearer admin-4129':
+                    print("Using special admin bypass token")
+                    # Force create admin user if needed
+                    create_admin_user()
+                    print("Admin access granted using special token")
+                    return f(*args, **kwargs)
+            
+            # Standard JWT auth path
+            try:
+                jwt_required()(lambda: None)()  # Call the JWT required decorator
+                current_user_id = get_jwt_identity()
+                print(f"JWT Auth successful - User ID: {current_user_id}")
+                
+                # Query the user
+                user = User.query.get(current_user_id)
+                
+                # If in Vercel and user not found, try admin recovery
+                if not user and is_vercel:
+                    print("User not found in database but in serverless environment")
+                    # Get or create admin user
+                    admin_user = User.query.filter_by(username='admin').first()
+                    if not admin_user:
+                        print("Creating admin user for authentication")
+                        admin_user = User(
+                            username='admin', 
+                            email='admin@cgpatracker.com',
+                            password_hash='4129',
+                            is_admin=True,
+                            is_active=True,
+                            created_at=datetime.now(timezone.utc).isoformat()
+                        )
+                        db.session.add(admin_user)
+                        db.session.commit()
+                        print(f"Admin user created with ID: {admin_user.id}")
+                        user = admin_user
+                    else:
+                        print(f"Found existing admin user with ID: {admin_user.id}")
+                        user = admin_user
+                
+                # Final checks
+                if not user:
+                    print(f"User ID {current_user_id} not found in database")
+                    return jsonify({'message': 'User not found'}), 403
+                    
+                if not user.is_admin:
+                    print(f"User {user.username} is not an admin")
+                    return jsonify({'message': 'Admin privileges required'}), 403
+                    
+                print(f"Admin access granted for {user.username}")
+                return f(*args, **kwargs)
+                
+            except Exception as jwt_error:
+                print(f"JWT validation error: {jwt_error}")
+                # If JWT validation fails, check for special admin token (if in Vercel)
+                if is_vercel and auth_header and auth_header == 'Bearer admin-4129':
+                    print("JWT failed but using admin bypass token")
+                    return f(*args, **kwargs)
+                # Otherwise return unauthorized
+                return jsonify({'message': 'Authentication required', 'error': str(jwt_error)}), 401
+                
+        except Exception as e:
+            print(f"Admin authorization error: {e}")
+            import traceback
+            traceback.print_exc()
+            return jsonify({'message': 'Authorization error', 'error': str(e)}), 500
+            
+    return decorated_function
+
+@app.route('/api/admin/backup', methods=['GET'])
+@admin_required
+def backup_database():
+    """Download database backup - Improved version with DatabaseManager"""
+    try:
+        # Log information about the request
+        current_user_id = get_jwt_identity()
+        user = User.query.get(current_user_id)
+        print(f"Backup requested by user ID: {current_user_id}, Username: {user.username if user else 'Unknown'}")
+        
+        # Check if we're in serverless environment
+        is_serverless = os.environ.get('VERCEL_REGION') is not None
+        print(f"Environment: {'Serverless (Vercel)' if is_serverless else 'Local'}")
+        
+        # Get database path from config
+        if is_serverless:
+            db_path = ":memory:"
+        else:
+            db_uri = app.config['SQLALCHEMY_DATABASE_URI']
+            if db_uri.startswith('sqlite:///'):
+                db_path = db_uri[10:]  # Remove sqlite:///
+                if not os.path.isabs(db_path):
+                    db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), db_path)
+            else:
+                return jsonify({'message': 'Backup only supports SQLite databases'}), 400
+        
+        # Create database manager
+        from .restore import DatabaseManager
+        db_manager = DatabaseManager(db_path, is_serverless=is_serverless)
+        
+        try:
+            if is_serverless:
+                # Use JSON backup for serverless
+                print("Creating JSON backup for serverless environment...")
+                json_data, filename = db_manager.backup_to_json()
+                
+                # Return JSON file as download
+                response = Response(
+                    json_data,
+                    mimetype='application/json',
+                    headers={'Content-Disposition': f'attachment; filename={filename}'}
+                )
+                print(f"JSON backup created successfully: {filename}")
+                return response
+            else:
+                # Use file backup for local environment
+                print("Creating file backup for local environment...")
+                backup_path = db_manager.backup_to_file()
+                
+                # Get the filename from the path
+                filename = os.path.basename(backup_path)
+                
+                # Return the file for download
+                return send_file(
+                    backup_path,
+                    as_attachment=True,
+                    download_name=filename,
+                    mimetype='application/octet-stream'
+                )
+        except Exception as backup_error:
+            print(f"Error in backup: {str(backup_error)}")
+            import traceback
+            traceback.print_exc()
+            
+            return jsonify({
+                'message': 'Error creating database backup',
+                'error': str(backup_error),
+                'environment': 'serverless' if is_serverless else 'local'
+            }), 500
+            
+    except ImportError as import_error:
+        print(f"Error importing DatabaseManager: {str(import_error)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'message': 'Server configuration error', 'error': str(import_error)}), 500
+        
+    except Exception as e:
+        print(f"Unexpected error in backup: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'message': 'Unexpected error', 'error': str(e)}), 500
+
+@app.route('/api/admin/restore', methods=['POST'])
+@admin_required
+def restore_database():
+    """Restore database from uploaded file - Improved version with DatabaseManager"""
+    try:
+        # Enhanced debugging for restore function
+        print("-" * 50)
+        print("RESTORE DATABASE FUNCTION CALLED")
+        print("-" * 50)
+        
+        # Check if we're in serverless environment
+        is_serverless = os.environ.get('VERCEL_REGION') is not None
+        print(f"Restore requested in {'serverless' if is_serverless else 'local'} environment")
+        
+        # Import the DatabaseManager class
+        try:
+            from .restore import DatabaseManager
+            print("Successfully imported DatabaseManager")
+        except ImportError as import_error:
+            print(f"Relative import failed, trying absolute import: {str(import_error)}")
+            try:
+                from api.restore import DatabaseManager
+                print("Successfully imported DatabaseManager from absolute path")
+            except ImportError:
+                print(f"Failed to import DatabaseManager: {str(import_error)}")
+                traceback.print_exc()
+                return jsonify({'message': 'Server configuration error', 'error': str(import_error)}), 500
+        
+        # Get database path
+        if is_serverless:
+            db_path = ":memory:"
+        else:
+            db_uri = app.config['SQLALCHEMY_DATABASE_URI']
+            if db_uri.startswith('sqlite:///'):
+                db_path = db_uri[10:]  # Remove sqlite:///
+                if not os.path.isabs(db_path):
+                    db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), db_path)
+            else:
+                return jsonify({'message': 'Restore only supports SQLite databases'}), 400
+        
+        # Create database manager
+        db_manager = DatabaseManager(db_path, is_serverless=is_serverless)
+        print(f"Created DatabaseManager for {db_path}")
+        
+        # Handle different restore methods based on request type
+        if request.is_json:
+            # Direct JSON in request body
+            try:
+                print("Processing JSON from request body")
+                backup_data = request.get_json()
+                
+                # Check if it's valid JSON
+                if not isinstance(backup_data, dict):
+                    print("Invalid JSON format: not a dictionary")
+                    return jsonify({'message': 'Invalid JSON format'}), 400
+                
+                # Restore from JSON data
+                success, message = db_manager.restore_from_json(backup_data)
+                
+                print(f"Restore result: success={success}, message={message}")
+                return jsonify({'message': message}), 200 if success else 400
+                
+            except Exception as json_error:
+                print(f"Error processing JSON request body: {json_error}")
+                traceback.print_exc()
+                return jsonify({'message': f'Error processing JSON: {str(json_error)}'}), 500
+        
+        # Handle file uploads
+        if 'file' not in request.files:
+            return jsonify({'message': 'No file part or JSON data in the request'}), 400
+            
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({'message': 'No file selected'}), 400
+            
+        is_db_file = file.filename.endswith('.db')
+        is_json_file = file.filename.endswith('.json')
+        
+        if not (is_db_file or is_json_file):
+            return jsonify({'message': 'Only .db or .json backup files are supported'}), 400
+            
+        try:
+            if is_json_file:
+                # Read JSON data
+                print(f"Processing JSON file: {file.filename}")
+                file_content = file.read().decode('utf-8')
+                
+                try:
+                    backup_data = json.loads(file_content)
+                    print(f"JSON parsed successfully, keys: {backup_data.keys() if isinstance(backup_data, dict) else 'Invalid format'}")
+                except json.JSONDecodeError as json_error:
+                    print(f"Error parsing JSON: {json_error}")
+                    print(f"File content preview: {file_content[:200]}...")
+                    return jsonify({'message': f'Invalid JSON format: {str(json_error)}'}), 400
+                
+                # Restore from JSON data
+                success, message = db_manager.restore_from_json(backup_data)
+                print(f"Restore result: success={success}, message={message}")
+                
+                if success:
+                    return jsonify({"message": message}), 200
+                else:
+                    return jsonify({"message": message}), 400
+            
+            elif is_db_file and not is_serverless:
+                # Handle SQLite DB file
+                try:
+                    # Create a temporary file to store the uploaded database
+                    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.db')
+                    file.save(temp_file.name)
+                    temp_file.close()
+                        
+                        # Try to connect to the uploaded database
+                        conn = sqlite3.connect(temp_file.name)
+                        cursor = conn.cursor()
+                        
+                        # Check if it has the required tables
+                        tables_query = "SELECT name FROM sqlite_master WHERE type='table';"
+                        cursor.execute(tables_query)
+                        tables = [row[0] for row in cursor.fetchall()]
+                        
+                        required_tables = ['user', 'user_data', 'cgpa_history']
+                        for table in required_tables:
+                            if table.lower() not in [t.lower() for t in tables]:
+                                os.unlink(temp_file.name)
+                                return jsonify({'message': f'Invalid database backup: missing {table} table'}), 400
+                        
+                        # Create a JSON-like structure from the SQLite data
+                        backup_data = {'users': []}
+                        
+                        # Get users
+                        cursor.execute("SELECT id, username, email, password_hash, created_at, last_login, is_active, is_admin FROM user")
+                        users = cursor.fetchall()
+                        
+                        for user in users:
+                            user_id, username, email, password_hash, created_at, last_login, is_active, is_admin = user
+                            user_data = {
+                                'id': user_id,
+                                'username': username,
+                                'email': email,
+                                'password_hash': password_hash,
+                                'created_at': created_at,
+                                'last_login': last_login,
+                                'is_active': bool(is_active),
+                                'is_admin': bool(is_admin),
+                                'data': [],
+                                'cgpa_history': []
+                            }
+                            
+                            # Get user data
+                            cursor.execute("SELECT id, semester, credits, gpa, notes, created_at FROM user_data WHERE user_id = ?", (user_id,))
+                            data_items = cursor.fetchall()
+                            
+                            for data in data_items:
+                                d_id, semester, credits, gpa, notes, d_created_at = data
+                                user_data['data'].append({
+                                    'id': d_id,
+                                    'semester': semester,
+                                    'credits': credits,
+                                    'gpa': gpa,
+                                    'notes': notes,
+                                    'created_at': d_created_at
+                                })
+                            
+                            # Get CGPA history
+                            cursor.execute("SELECT id, cgpa, timestamp FROM cgpa_history WHERE user_id = ?", (user_id,))
+                            history_items = cursor.fetchall()
+                            
+                            for history in history_items:
+                                h_id, cgpa, timestamp = history
+                                user_data['cgpa_history'].append({
+                                    'id': h_id,
+                                    'cgpa': cgpa,
+                                    'timestamp': timestamp
+                                })
+                            
+                            backup_data['users'].append(user_data)
+                        
+                        # Close connection and remove temp file
+                        conn.close()
+                        os.unlink(temp_file.name)
+                        
+                    except sqlite3.Error as sql_error:
+                        if os.path.exists(temp_file.name):
+                            os.unlink(temp_file.name)
+                        return jsonify({'message': f'Invalid SQLite database file: {str(sql_error)}'}), 400
+                    except Exception as db_error:
+                        if os.path.exists(temp_file.name):
+                            os.unlink(temp_file.name)
+                        return jsonify({'message': f'Error processing database file: {str(db_error)}'}), 500
+                    
+                # Clear existing data
+                try:
+                    UserData.query.delete()
+                    CGPAHistory.query.delete()
+                    User.query.filter(User.username != 'admin').delete()
+                    db.session.commit()
+                    print("Existing data cleared")
+                except Exception as clear_error:
+                    print(f"Error clearing data: {clear_error}")
+                    db.session.rollback()
+                    return jsonify({'message': f'Error clearing existing data: {str(clear_error)}'}), 500
+                
+                # Import users
+                admin_user = User.query.filter_by(username='admin').first()
+                admin_id = admin_user.id if admin_user else None
+                
+                users_created = 0
+                for user_data in backup_data['users']:
+                    # Skip admin user
+                    if user_data.get('username') == 'admin':
+                        continue
+                        
+                    # Create user
+                    try:
+                        new_user = User(
+                            username=user_data.get('username'),
+                            email=user_data.get('email'),
+                            password_hash=user_data.get('password_hash', bcrypt.generate_password_hash('changeme').decode('utf-8')),
+                            is_active=user_data.get('is_active', True),
+                            is_admin=user_data.get('is_admin', False)
+                        )
+                        if 'created_at' in user_data and user_data['created_at']:
+                            new_user.created_at = user_data['created_at']  # Store as string directly
+                        if 'last_login' in user_data and user_data['last_login']:
+                            new_user.last_login = user_data['last_login']  # Store as string directly
+                            
+                        db.session.add(new_user)
+                        db.session.flush()  # Get the ID without committing
+                        
+                        # Import user data
+                        if 'data' in user_data:
+                            for data_item in user_data['data']:
+                                new_data = UserData(
+                                    user_id=new_user.id,
+                                    course_data=data_item.get('course_data', '{}'),
+                                    target_cgpa=data_item.get('target_cgpa')
+                                )
+                                if 'created_at' in data_item and data_item['created_at']:
+                                    new_data.created_at = data_item['created_at']  # Store as string directly
+                                db.session.add(new_data)
+                                
+                        # Import CGPA history
+                        if 'cgpa_history' in user_data:
+                            for history_item in user_data['cgpa_history']:
+                                new_history = CGPAHistory(
+                                    user_id=new_user.id,
+                                    cgpa=history_item.get('cgpa'),
+                                    total_credits=history_item.get('total_credits', 0),
+                                    grade_points=history_item.get('grade_points', 0)
+                                )
+                                if 'timestamp' in history_item and history_item['timestamp']:
+                                    new_history.recorded_at = history_item['timestamp']  # Store as string directly and use the correct field name
+                                db.session.add(new_history)
+                                
+                        users_created += 1
+                    except Exception as user_error:
+                        print(f"Error importing user {user_data.get('username')}: {user_error}")
+                        # Continue with other users
+                        
+                # Commit all changes
+                db.session.commit()
+                return jsonify({
+                    'message': 'Database restored successfully',
+                    'users_imported': users_created
+                })
+                
+            except json.JSONDecodeError:
+                return jsonify({'message': 'Invalid JSON format'}), 400
+            except Exception as import_error:
+                print(f"Error importing data: {import_error}")
+                import traceback
+                traceback.print_exc()
+                db.session.rollback()
+                return jsonify({'message': f'Error importing data: {str(import_error)}'}), 500
+        else:
+            # For local environment, support both SQLite and JSON restore
+            if 'file' not in request.files:
+                return jsonify({'message': 'No file part in the request'}), 400
+                
+            file = request.files['file']
+            if file.filename == '':
+                return jsonify({'message': 'No file selected'}), 400
+                
+            if file.filename.endswith('.json'):
+                # Process JSON file for local environment
+                try:
+                    file_content = file.read().decode('utf-8')
+                    backup_data = json.loads(file_content)
+                    
+                    # Import the restore module
+                    try:
+                        from .restore import restore_from_json
+                    except ImportError:
+                        from api.restore import restore_from_json
+                    
+                    # Process the JSON data
+                    db_path = app.config['SQLALCHEMY_DATABASE_URI'].replace('sqlite:///', '')
+                    success, message = restore_from_json(backup_data, db_path)
+                    
+                    print(f"Restore function returned: success={success}, message={message}")
+                    
+                    if success:
+                        return jsonify({"message": message}), 200
+                    else:
+                        return jsonify({"message": message}), 400
+                except Exception as json_error:
+                    print(f"Error processing JSON file: {json_error}")
+                    import traceback
+                    traceback.print_exc()
+                    return jsonify({'message': f'Error processing JSON file: {str(json_error)}'}), 500
+            
+            if not file.filename.endswith('.db'):
+                return jsonify({'message': 'Only .db or .json backup files are supported'}), 400
+                
+            try:
+                # Create a temporary file to store the uploaded database
+                temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.db')
+                file.save(temp_file.name)
+                temp_file.close()
+                
+                # Get the path to the current database
+                db_uri = app.config['SQLALCHEMY_DATABASE_URI']
+                if db_uri.startswith('sqlite:///'):
+                    db_path = db_uri[10:]  # Remove sqlite:///
+                    if not os.path.isabs(db_path):
+                        db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), db_path)
+                        
+                    # Create a backup before overwriting
+                    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    backup_filename = f"cgpa_tracker_backup_before_restore_{timestamp}.db"
+                    backup_dir = os.path.join(os.path.dirname(db_path))
+                    backup_path = os.path.join(backup_dir, backup_filename)
+                    
+                    # Make backup directory if it doesn't exist
+                    os.makedirs(os.path.dirname(backup_path), exist_ok=True)
+                    
+                    # Create backup
+                    shutil.copy2(db_path, backup_path)
+                    
+                    # Close database connection
+                    db.session.close()
+                    db.engine.dispose()
+                    
+                    # Replace current database with uploaded one
+                    shutil.copy2(temp_file.name, db_path)
+                    
+                    # Remove temp file
+                    os.unlink(temp_file.name)
+                    
+                    return jsonify({
+                        'message': 'Database restored successfully',
+                        'backup_created': backup_filename
+                    })
+                else:
+                    return jsonify({'message': 'Restore only supports SQLite databases'}), 400
+                    
+            except Exception as restore_error:
+                print(f"Restore error: {restore_error}")
+                import traceback
+                traceback.print_exc()
+                return jsonify({'message': f'Error restoring database: {str(restore_error)}'}), 500
+    except Exception as e:
+        print(f"Restore error: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/admin/users', methods=['GET'])
+@admin_required
+def admin_list_users():
+    """Admin endpoint to list all users with detailed info"""
+    try:
+        users = User.query.all()
+        user_list = []
+        for user in users:
+            user_data = UserData.query.filter_by(user_id=user.id).first()
+            course_count = 0
+            if user_data and user_data.course_data:
+                course_data = json.loads(user_data.course_data)
+                course_count = len(course_data.get('courses', {}))
+            
+            user_list.append({
+                'id': user.id,
+                'username': user.username,
+                'email': user.email,
+                'is_admin': user.is_admin,
+                'is_active': user.is_active,
+                'course_count': course_count,
+                'created_at': user.created_at,
+                'last_login': user.last_login
+            })
+        return jsonify({'users': user_list, 'count': len(user_list)})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/admin/stats', methods=['GET'])
+@admin_required
+def admin_stats():
+    """Get admin dashboard statistics"""
+    try:
+        total_users = User.query.count()
+        active_users = User.query.filter_by(is_active=True).count()
+        admin_users = User.query.filter_by(is_admin=True).count()
+        
+        # Get users with course data
+        users_with_data = db.session.query(User).join(UserData).count()
+        
+        return jsonify({
+            'total_users': total_users,
+            'active_users': active_users,
+            'admin_users': admin_users,
+            'users_with_data': users_with_data,
+            'database_size': 'N/A (Serverless environment)'
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+# Initialize database and admin user
+def init_db():
+    """Initialize database and create admin user"""
+    try:
+        # First check if we can connect to the database
+        connection = db.engine.connect()
+        connection.close()
+        print("Database connection successful")
+        
+        # Now create tables
+        try:
+            db.create_all()
+            print("Database tables created successfully")
+        except Exception as table_error:
+            print(f"Error creating tables: {table_error}")
+        
+        # Now create admin user
+        create_admin_user()
+        print("Database initialized successfully")
+    except Exception as e:
+        print(f"Error initializing database: {e}")
+
+# Initialize on import for Vercel - always initialize for serverless environment
+with app.app_context():
+    try:
+        print("Starting database initialization for serverless environment...")
+        # Force initialization for serverless - tables need to be created each time
+        init_db()
+        print("Database initialization completed for serverless")
+    except Exception as e:
+        print(f"Database initialization error (non-critical): {e}")
+
+# JWT Error Handlers
+@jwt.expired_token_loader
+def expired_token_callback(jwt_header, jwt_payload):
+    return jsonify({'message': 'Token has expired'}), 401
+
+@jwt.invalid_token_loader
+def invalid_token_callback(error):
+    return jsonify({'message': 'Invalid token'}), 401
+
+@jwt.unauthorized_loader
+def missing_token_callback(error):
+    return jsonify({'message': 'Authorization token is required'}), 401
+
+# This is the application object that Vercel will import
+application = app
+
+# Health check endpoint - useful for debugging API status
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    try:
+        # Check database connection by executing simple query
+        try:
+            db.session.execute('SELECT 1').fetchall()
+            db_status = "connected"
+        except Exception as db_error:
+            db_status = f"error: {str(db_error)}"
+        
+        # Return health information
+        return jsonify({
+            'status': 'ok',
+            'timestamp': datetime.now().isoformat(),
+            'environment': 'vercel' if os.environ.get('VERCEL_REGION') else 'local',
+            'database': db_status,
+            'database_uri_type': 'in-memory' if ':memory:' in app.config['SQLALCHEMY_DATABASE_URI'] else 'file-based',
+            'endpoints': {
+                'register': '/api/auth/register',
+                'login': '/api/auth/login',
+                'health': '/api/health'
+            }
+        })
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'error': str(e)
+        }), 500
+
+# Required handler for Vercel serverless
+@app.route('/', defaults={'path': ''})
+@app.route('/<path:path>')
+def catch_all(path):
+    # If this is an API request that wasn't matched, return 404
+    if path.startswith('api/'):
+        return jsonify({'error': 'API endpoint not found'}), 404
+        
+    # Otherwise serve the index.html file
+    return app.send_static_file('index.html') if os.path.exists(os.path.join(app.static_folder, 'index.html')) else render_template('index.html')
+
+# For local development
+if __name__ == '__main__':
+    app.run(debug=True)

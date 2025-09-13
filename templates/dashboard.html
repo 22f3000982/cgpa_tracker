@@ -6,6 +6,7 @@
     <title>Dashboard - CGPA Tracker</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         body {
             background: #f8f9fa;
@@ -402,17 +403,6 @@
             color: white;
         }
         
-        .dark-mode .btn-logout {
-            background: rgba(52, 152, 219, 0.2);
-            border-color: rgba(52, 152, 219, 0.3);
-            color: #3498db;
-        }
-        
-        .dark-mode .btn-logout:hover {
-            background: rgba(52, 152, 219, 0.3);
-            color: #3498db;
-        }
-        
         .dark-mode .btn-save {
             background: linear-gradient(135deg, #27ae60 0%, #2ecc71 100%);
         }
@@ -435,20 +425,6 @@
         .grade-C { background-color: #ffc107; color: black; }
         .grade-D { background-color: #fd7e14; color: white; }
         .grade-E { background-color: #dc3545; color: white; }
-        
-        .btn-logout {
-            background: rgba(255, 255, 255, 0.2);
-            border: 1px solid rgba(255, 255, 255, 0.3);
-            color: white;
-            border-radius: 8px;
-            padding: 8px 16px;
-            transition: all 0.3s ease;
-        }
-        
-        .btn-logout:hover {
-            background: rgba(255, 255, 255, 0.3);
-            color: white;
-        }
         
         .btn-save {
             background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
@@ -540,6 +516,36 @@
         .option-card.selected .option-courses {
             display: block;
         }
+        
+        /* Chart Styles */
+        .chart-container {
+            padding: 15px;
+        }
+        
+        .cgpa-display {
+            font-size: 1.8rem;
+            font-weight: bold;
+            color: #28a745;
+        }
+        
+        .dark-mode .cgpa-display {
+            color: #2ecc71;
+        }
+        
+        .chart-stats {
+            margin-top: 10px;
+        }
+        
+        .chart-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin-bottom: 15px;
+            color: #495057;
+        }
+        
+        .dark-mode .chart-title {
+            color: #ecf0f1;
+        }
     </style>
 </head>
 <body>
@@ -555,16 +561,8 @@
                 CGPA Tracker
             </a>
             <div class="navbar-nav ms-auto d-flex flex-row align-items-center">
-                <span class="navbar-text me-3">
-                    Welcome, <span id="username">Loading...</span>
-                </span>
-                <button class="btn btn-logout me-2" onclick="goToAdmin()" id="admin-btn" style="display: none;">
-                    <i class="fas fa-user-shield me-1"></i>
-                    Admin
-                </button>
-                <button class="btn btn-logout" onclick="logout()">
-                    <i class="fas fa-sign-out-alt me-1"></i>
-                    Logout
+                <button class="dark-mode-toggle" onclick="toggleDarkMode()">
+                    <i class="fas fa-moon"></i>
                 </button>
             </div>
         </div>
@@ -597,6 +595,62 @@
                     <div class="stat-card progress-card">
                         <div class="stat-value" id="progress-percentage">0%</div>
                         <div class="stat-label">Degree Progress</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- CGPA Analysis Charts -->
+            <div class="row mb-5">
+                <div class="col-12">
+                    <div class="stat-card">
+                        <h5 class="mb-4">
+                            <i class="fas fa-chart-pie me-2"></i>
+                            CGPA Analysis by Academic Level
+                        </h5>
+                        <div class="row">
+                            <div class="col-md-4">
+                                <div class="chart-container text-center">
+                                    <h6 class="text-muted mb-3">Foundation Level</h6>
+                                    <div style="position: relative; height: 200px;">
+                                        <canvas id="foundationChart"></canvas>
+                                    </div>
+                                    <div class="mt-2">
+                                        <div class="chart-stats">
+                                            <span class="cgpa-display" id="foundation-cgpa">0.00</span>
+                                            <div class="text-muted small">CGPA</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-4">
+                                <div class="chart-container text-center">
+                                    <h6 class="text-muted mb-3">Programming Diploma</h6>
+                                    <div style="position: relative; height: 200px;">
+                                        <canvas id="programmingChart"></canvas>
+                                    </div>
+                                    <div class="mt-2">
+                                        <div class="chart-stats">
+                                            <span class="cgpa-display" id="programming-cgpa">0.00</span>
+                                            <div class="text-muted small">CGPA</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-4">
+                                <div class="chart-container text-center">
+                                    <h6 class="text-muted mb-3">Data Science Diploma</h6>
+                                    <div style="position: relative; height: 200px;">
+                                        <canvas id="dataScienceChart"></canvas>
+                                    </div>
+                                    <div class="mt-2">
+                                        <div class="chart-stats">
+                                            <span class="cgpa-display" id="dataScience-cgpa">0.00</span>
+                                            <div class="text-muted small">CGPA</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -691,46 +745,15 @@
         let courseGroups = {};
         let courseOptions = {};
         let selectedDataScienceOption = null;
-
-        // Check authentication
-        function checkAuth() {
-            const token = localStorage.getItem('access_token');
-            console.log('DEBUG: Token from localStorage:', token ? 'Token exists' : 'No token found');
-            if (!token) {
-                console.log('DEBUG: No token found, redirecting to login');
-                window.location.href = '/';
-                return false;
-            }
-            return token;
-        }
-
-        // Logout function
-        function logout() {
-            localStorage.removeItem('access_token');
-            localStorage.removeItem('user');
-            window.location.href = '/';
-        }
-
-        // Go to admin dashboard
-        function goToAdmin() {
-            window.location.href = '/admin';
-        }
+        
+        // Chart variables
+        let foundationChart = null;
+        let programmingChart = null;
+        let dataScienceChart = null;
 
         // Load user data
         async function loadUserData() {
-            const token = checkAuth();
-            if (!token) return;
-
             try {
-                // Load user info
-                const user = JSON.parse(localStorage.getItem('user') || '{}');
-                document.getElementById('username').textContent = user.username || 'User';
-                
-                // Show admin button if user is admin
-                if (user.is_admin) {
-                    document.getElementById('admin-btn').style.display = 'block';
-                }
-
                 // Load courses
                 const coursesResponse = await fetch(`${API_BASE}/courses`);
                 const coursesData = await coursesResponse.json();
@@ -751,23 +774,11 @@
                 });
 
                 // Load user data
-                const response = await fetch(`${API_BASE}/user/data`, {
-                    headers: {
-                        'Authorization': `Bearer ${token}`,
-                        'Content-Type': 'application/json'
-                    }
-                });
+                const response = await fetch(`${API_BASE}/user/data`);
 
                 console.log('DEBUG: Response status:', response.status);
                 
                 if (!response.ok) {
-                    if (response.status === 401 || response.status === 422) {
-                        console.log('DEBUG: Authentication failed, clearing token and redirecting');
-                        localStorage.removeItem('access_token');
-                        localStorage.removeItem('user');
-                        window.location.href = '/';
-                        return;
-                    }
                     throw new Error(`HTTP ${response.status}: ${response.statusText}`);
                 }
 
@@ -807,6 +818,9 @@
             
             // Update section credits
             updateSectionCredits();
+            
+            // Update donut charts
+            updateDonutCharts();
         }
         
         // Update the credits counter for each section
@@ -876,6 +890,166 @@
                 dataScienceCreditsElement.textContent = 
                     `${sectionCompletedCredits.dataScience}/${sectionTotalCredits.dataScience} credits`;
             }
+        }
+
+        // Calculate CGPA for a specific section
+        function calculateSectionCGPA(sectionCourses) {
+            let totalPoints = 0;
+            let totalCredits = 0;
+            
+            sectionCourses.forEach(course => {
+                const courseGrade = courseData.courses[course.id];
+                if (courseGrade && courseGrade.grade) {
+                    const gradePoints = { S: 10, A: 9, B: 8, C: 7, D: 6, E: 4 }[courseGrade.grade] || 0;
+                    totalPoints += gradePoints * course.credits;
+                    totalCredits += course.credits;
+                }
+            });
+            
+            return totalCredits > 0 ? totalPoints / totalCredits : 0;
+        }
+
+        // Create donut chart
+        function createDonutChart(canvasId, data, centerText) {
+            const ctx = document.getElementById(canvasId).getContext('2d');
+            
+            return new Chart(ctx, {
+                type: 'doughnut',
+                data: {
+                    labels: data.labels,
+                    datasets: [{
+                        data: data.values,
+                        backgroundColor: data.colors,
+                        borderWidth: 2,
+                        borderColor: '#fff'
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    cutout: '70%',
+                    plugins: {
+                        legend: {
+                            position: 'bottom',
+                            labels: {
+                                padding: 15,
+                                font: {
+                                    size: 11
+                                }
+                            }
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    const label = context.label;
+                                    const value = context.parsed;
+                                    const total = context.dataset.data.reduce((a, b) => a + b, 0);
+                                    const percentage = total > 0 ? ((value / total) * 100).toFixed(1) : 0;
+                                    return `${label}: ${value} courses (${percentage}%)`;
+                                }
+                            }
+                        }
+                    },
+                    onHover: (event, activeElements) => {
+                        event.native.target.style.cursor = activeElements.length > 0 ? 'pointer' : 'default';
+                    }
+                }
+            });
+        }
+
+        // Update donut charts
+        function updateDonutCharts() {
+            // Prepare data for each section
+            const gradeColors = {
+                'S': '#28a745',
+                'A': '#17a2b8', 
+                'B': '#007bff',
+                'C': '#ffc107',
+                'D': '#fd7e14',
+                'E': '#dc3545',
+                'Not Taken': '#e9ecef'
+            };
+
+            // Foundation Level Chart
+            const foundationCourses = courseGroups.foundation || [];
+            const foundationGrades = { S: 0, A: 0, B: 0, C: 0, D: 0, E: 0, 'Not Taken': 0 };
+            
+            foundationCourses.forEach(course => {
+                const grade = courseData.courses[course.id]?.grade;
+                if (grade) {
+                    foundationGrades[grade]++;
+                } else {
+                    foundationGrades['Not Taken']++;
+                }
+            });
+
+            const foundationCGPA = calculateSectionCGPA(foundationCourses);
+            document.getElementById('foundation-cgpa').textContent = foundationCGPA.toFixed(2);
+
+            // Programming Diploma Chart
+            const programmingCourses = courseGroups.programming || [];
+            const programmingGrades = { S: 0, A: 0, B: 0, C: 0, D: 0, E: 0, 'Not Taken': 0 };
+            
+            programmingCourses.forEach(course => {
+                const grade = courseData.courses[course.id]?.grade;
+                if (grade) {
+                    programmingGrades[grade]++;
+                } else {
+                    programmingGrades['Not Taken']++;
+                }
+            });
+
+            const programmingCGPA = calculateSectionCGPA(programmingCourses);
+            document.getElementById('programming-cgpa').textContent = programmingCGPA.toFixed(2);
+
+            // Data Science Diploma Chart
+            let dataScienceCourses = [...(courseGroups.dataScience_core || [])];
+            if (selectedDataScienceOption === 'option1') {
+                dataScienceCourses = dataScienceCourses.concat(courseGroups.dataScience_option1 || []);
+            } else if (selectedDataScienceOption === 'option2') {
+                dataScienceCourses = dataScienceCourses.concat(courseGroups.dataScience_option2 || []);
+            }
+
+            const dataScienceGrades = { S: 0, A: 0, B: 0, C: 0, D: 0, E: 0, 'Not Taken': 0 };
+            
+            dataScienceCourses.forEach(course => {
+                const grade = courseData.courses[course.id]?.grade;
+                if (grade) {
+                    dataScienceGrades[grade]++;
+                } else {
+                    dataScienceGrades['Not Taken']++;
+                }
+            });
+
+            const dataScienceCGPA = calculateSectionCGPA(dataScienceCourses);
+            document.getElementById('dataScience-cgpa').textContent = dataScienceCGPA.toFixed(2);
+
+            // Create chart data
+            const createChartData = (grades) => {
+                const labels = [];
+                const values = [];
+                const colors = [];
+                
+                Object.entries(grades).forEach(([grade, count]) => {
+                    if (count > 0) {
+                        labels.push(grade);
+                        values.push(count);
+                        colors.push(gradeColors[grade]);
+                    }
+                });
+                
+                return { labels, values, colors };
+            };
+
+            // Destroy existing charts
+            if (foundationChart) foundationChart.destroy();
+            if (programmingChart) programmingChart.destroy();
+            if (dataScienceChart) dataScienceChart.destroy();
+
+            // Create new charts
+            foundationChart = createDonutChart('foundationChart', createChartData(foundationGrades));
+            programmingChart = createDonutChart('programmingChart', createChartData(programmingGrades));
+            dataScienceChart = createDonutChart('dataScienceChart', createChartData(dataScienceGrades));
         }
 
         // Render courses
@@ -987,6 +1161,9 @@
             
             // Re-render to enable/disable grade selects - but skip option check to prevent infinite recursion
             renderCourses(true);
+            
+            // Update donut charts with new data
+            updateDonutCharts();
         }
 
         // Clear grades from an option
@@ -1140,6 +1317,9 @@
             
             // Update the dashboard with the new stats
             updateDashboard();
+            
+            // Update donut charts
+            updateDonutCharts();
         }
 
         // Show save status
@@ -1185,15 +1365,11 @@
 
         // Auto-save data (with subtle feedback)
         async function autoSaveData() {
-            const token = checkAuth();
-            if (!token) return;
-
             try {
                 console.log('DEBUG: Starting auto-save...');
                 const response = await fetch(`${API_BASE}/user/data`, {
                     method: 'POST',
                     headers: {
-                        'Authorization': `Bearer ${token}`,
                         'Content-Type': 'application/json'
                     },
                     body: JSON.stringify({
@@ -1209,13 +1385,6 @@
                     console.log('DEBUG: Auto-save successful');
                     showSaveStatus('✓ Grade saved automatically', true);
                 } else {
-                    if (response.status === 401 || response.status === 422) {
-                        console.log('DEBUG: Authentication failed during auto-save');
-                        localStorage.removeItem('access_token');
-                        localStorage.removeItem('user');
-                        window.location.href = '/';
-                        return;
-                    }
                     const errorData = await response.json();
                     console.error('Auto-save failed:', errorData.message);
                     showSaveStatus('Failed to save grade', false);
@@ -1228,9 +1397,6 @@
 
         // Save data
         async function saveData() {
-            const token = checkAuth();
-            if (!token) return;
-
             const saveBtn = document.querySelector('.btn-save');
             const originalText = saveBtn.innerHTML;
             saveBtn.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>Saving...';
@@ -1240,7 +1406,6 @@
                 const response = await fetch(`${API_BASE}/user/data`, {
                     method: 'POST',
                     headers: {
-                        'Authorization': `Bearer ${token}`,
                         'Content-Type': 'application/json'
                     },
                     body: JSON.stringify({
